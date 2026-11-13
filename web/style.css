@@ -195,3 +195,19 @@ ol.plain, #board { margin: 0; padding-left: 20px; font-size: 13px; }
 .sheet-pairs b { color: var(--accent2); }
 @media (max-width: 560px) { .build-stats { grid-template-columns: 1fr; } }
 #sheet .card > button { margin: 4px 0 10px; }
+
+/* Skill tree */
+.tree { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+.branch { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.branch h4 { margin: 0 0 4px; font-size: 13px; color: var(--accent2); }
+.branch:nth-child(even) h4 { color: var(--blue); }
+.node { font-size: 12px; border-left: 3px solid var(--line); padding: 2px 6px; margin: 3px 0; cursor: help; }
+.node.child { margin-left: 10px; }
+.node b { display: block; font-size: 13px; }
+.node b small { color: var(--muted); font-weight: 400; }
+.node span { color: var(--muted); }
+.node.own { border-color: var(--good); }
+.node.own b { color: var(--good); }
+.node.open { border-color: var(--accent); }
+.node.locked { opacity: .5; }
+@media (max-width: 560px) { .tree { grid-template-columns: 1fr; } }

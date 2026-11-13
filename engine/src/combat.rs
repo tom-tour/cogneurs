@@ -149,7 +149,7 @@ impl<'a> Side<'a> {
 
     /// Control against tenacity.
     fn control(&self, foe: &Side) -> i32 {
-        self.f.stats.ctl - foe.f.stats.ten
+        self.f.stats.ctl - foe.f.stats.ten - if foe.f.has(Skill::Resist) { 2 } else { 0 }
     }
 
     fn hp_pct_below(&self, p: u8) -> bool {
@@ -174,6 +174,15 @@ impl<'a> Side<'a> {
         };
         if self.f.has(Skill::Fury) && self.hp_pct_below(30) {
             d *= 1.4;
+        }
+        if self.f.has(Skill::Bloodlust) && foe.hp_pct_below(50) {
+            d *= 1.2;
+        }
+        if self.f.has(Skill::Relentless) && foe.stunned {
+            d *= 1.25;
+        }
+        if foe.f.has(Skill::LastStand) && foe.hp_pct_below(30) {
+            d *= 0.75;
         }
         d
     }
@@ -279,11 +288,22 @@ fn strike(s: &mut [Side; 2], a: usize, ev: &mut Vec<Event>, rule: i32, o: Strike
 
     let crit_pct = s[a].crit_pct(&s[d]);
     let crit = s[a].crit.add(crit_pct);
-    let mut dmg = s[a].damage(ws, o.mult, &s[d]);
-    if crit {
-        dmg *= 1.5;
+    let mut mult = o.mult;
+    if o.kind == "power" && s[d].f.has(Skill::Brace) {
+        mult *= 0.75;
     }
-    let pierces = weapon == Some(WeaponKind::Flail);
+    let mut dmg = s[a].damage(ws, mult, &s[d]);
+    if crit {
+        let mut c = 1.5;
+        if s[a].f.has(Skill::PreciseStrikes) {
+            c += 0.5;
+        }
+        if s[d].f.has(Skill::IceBlood) {
+            c -= 0.25;
+        }
+        dmg *= c;
+    }
+    let pierces = weapon == Some(WeaponKind::Flail) && !(s[d].guarding && s[d].f.has(Skill::StrongGuard));
     let shield = s[d].f.has(Skill::Shield);
     let mut blocked = false;
     if !pierces {
@@ -322,7 +342,8 @@ fn strike(s: &mut [Side; 2], a: usize, ev: &mut Vec<Event>, rule: i32, o: Strike
 
 fn riposte(s: &mut [Side; 2], who: usize, ev: &mut Vec<Event>) {
     let ws = s[who].weapon_stats();
-    let dmg = (s[who].damage(ws, 0.6, &s[1 - who]).round() as i32).max(1);
+    let mult = if s[who].f.has(Skill::SharpRiposte) { 1.0 } else { 0.6 };
+    let dmg = (s[who].damage(ws, mult, &s[1 - who]).round() as i32).max(1);
     s[1 - who].hp -= dmg;
     let weapon = s[who].wield;
     let e = push(ev, s, who, "counter", -1);
@@ -337,8 +358,14 @@ fn take_turn(s: &mut [Side; 2], i: usize, ev: &mut Vec<Event>) {
     s[i].guarding = false;
     if s[i].stunned {
         s[i].stunned = false;
+        if s[i].f.has(Skill::BreakFree) {
+            s[i].gauge += 50;
+        }
         push(ev, s, i, "skip", -1);
         return;
+    }
+    if s[i].f.has(Skill::Regen) {
+        s[i].hp = (s[i].hp + 2).min(s[i].max_hp);
     }
     s[i].cd_power = s[i].cd_power.saturating_sub(1);
     s[i].cd_disarm = s[i].cd_disarm.saturating_sub(1);
@@ -393,7 +420,8 @@ fn take_turn(s: &mut [Side; 2], i: usize, ev: &mut Vec<Event>) {
             let hit = !s[f].grip.add(100 - pct(ok));
             let w = s[f].wield;
             if hit {
-                if let Some(w) = w {
+                // With Grip, the weapon falls nearby and can be taken back.
+                if let Some(w) = w.filter(|_| !s[f].f.has(Skill::Grip)) {
                     s[f].inv.retain(|x| *x != w);
                 }
                 s[f].wield = None;

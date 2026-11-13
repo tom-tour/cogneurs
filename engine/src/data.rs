@@ -54,22 +54,151 @@ impl WeaponKind {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum Skill {
-    /// Passive 12% block chance; the Guard action blocks 75% instead of 50%.
-    Shield,
-    /// One potion per fight, heals 40% of max HP.
-    Potion,
+    // Power
     /// Double damage strike, 3 turns cooldown.
     PowerStrike,
-    /// Knock the enemy weapon away (it is lost for the fight).
-    Disarm,
+    // Rampart
+    /// Passive 12% block chance; the Guard action blocks 75% instead of 50%.
+    Shield,
+    /// Guarding also stops the flail.
+    StrongGuard,
+    /// Power strikes taken deal x1.5 instead of x2.
+    Brace,
+    // Finesse
+    /// Critical hits deal x2 instead of x1.5.
+    PreciseStrikes,
+    // Composure
+    /// Critical hits taken deal 0.25 less.
+    IceBlood,
     /// Riposte after a dodge or a guarded hit.
     Counter,
+    /// Ripostes deal full damage instead of 60%.
+    SharpRiposte,
+    // Control
+    /// Knock the enemy weapon away (it is lost for the fight).
+    Disarm,
+    // Tenacity
+    /// Counts as 2 more tenacity against control.
+    Resist,
+    /// A stun only costs half a turn.
+    BreakFree,
+    /// A disarmed weapon stays in the inventory and can be taken back.
+    Grip,
+    // Rage
     /// +40% damage under 30% HP.
     Fury,
+    /// +20% damage against an enemy under 50% HP.
+    Bloodlust,
+    /// +25% damage against a stunned enemy.
+    Relentless,
+    // Survival
+    /// One potion per fight, heals 40% of max HP.
+    Potion,
+    /// +2 HP at the start of each of its turns.
+    Regen,
+    /// -25% damage taken under 30% HP.
+    LastStand,
 }
 
-pub const ALL_SKILLS: [Skill; 6] =
-    [Skill::Shield, Skill::Potion, Skill::PowerStrike, Skill::Disarm, Skill::Counter, Skill::Fury];
+/// A skill tree branch: three nodes, each with its prerequisite.
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct Branch {
+    pub key: &'static str,
+    pub nodes: [Node; 3],
+}
+
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct Node {
+    pub pick: Pick,
+    pub req: Option<Pick>,
+}
+
+const fn w(weapon: WeaponKind) -> Pick {
+    Pick::Weapon { weapon }
+}
+const fn sk(skill: Skill) -> Pick {
+    Pick::Skill { skill }
+}
+const fn root(pick: Pick) -> Node {
+    Node { pick, req: None }
+}
+const fn after(pick: Pick, req: Pick) -> Node {
+    Node { pick, req: Some(req) }
+}
+
+/// The skill tree, in opposed pairs: each offensive branch is followed by
+/// the defensive branch that answers it.
+pub const TREE: [Branch; 8] = [
+    Branch {
+        key: "power",
+        nodes: [
+            root(w(WeaponKind::Club)),
+            after(w(WeaponKind::Flail), w(WeaponKind::Club)),
+            after(sk(Skill::PowerStrike), w(WeaponKind::Club)),
+        ],
+    },
+    Branch {
+        key: "rampart",
+        nodes: [
+            root(sk(Skill::Shield)),
+            after(sk(Skill::StrongGuard), sk(Skill::Shield)),
+            after(sk(Skill::Brace), sk(Skill::Shield)),
+        ],
+    },
+    Branch {
+        key: "finesse",
+        nodes: [
+            root(w(WeaponKind::Sword)),
+            after(w(WeaponKind::Knife), w(WeaponKind::Sword)),
+            after(sk(Skill::PreciseStrikes), w(WeaponKind::Sword)),
+        ],
+    },
+    Branch {
+        key: "composure",
+        nodes: [
+            root(sk(Skill::IceBlood)),
+            after(sk(Skill::Counter), sk(Skill::IceBlood)),
+            after(sk(Skill::SharpRiposte), sk(Skill::Counter)),
+        ],
+    },
+    Branch {
+        key: "control",
+        nodes: [
+            root(w(WeaponKind::Spear)),
+            after(w(WeaponKind::Net), w(WeaponKind::Spear)),
+            after(sk(Skill::Disarm), w(WeaponKind::Spear)),
+        ],
+    },
+    Branch {
+        key: "tenacity",
+        nodes: [
+            root(sk(Skill::Resist)),
+            after(sk(Skill::BreakFree), sk(Skill::Resist)),
+            after(sk(Skill::Grip), sk(Skill::Resist)),
+        ],
+    },
+    Branch {
+        key: "rage",
+        nodes: [
+            root(sk(Skill::Fury)),
+            after(sk(Skill::Bloodlust), sk(Skill::Fury)),
+            after(sk(Skill::Relentless), sk(Skill::Fury)),
+        ],
+    },
+    Branch {
+        key: "survival",
+        nodes: [
+            root(sk(Skill::Potion)),
+            after(sk(Skill::Regen), sk(Skill::Potion)),
+            after(sk(Skill::LastStand), sk(Skill::Potion)),
+        ],
+    },
+];
+
+/// Prerequisite of a tree pick, if any.
+pub fn requirement(p: Pick) -> Option<Pick> {
+    TREE.iter().flat_map(|b| b.nodes.iter()).find(|n| n.pick == p).and_then(|n| n.req)
+}
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
@@ -186,7 +315,7 @@ pub struct Rule {
 }
 
 /// The choice made when reaching a level. Odd levels give a rule slot or a
-/// condition, even levels a weapon or a skill (the skill tree comes later).
+/// condition, even levels a node of the skill tree (a weapon or a skill).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(tag = "k", rename_all = "snake_case")]
 pub enum Pick {
@@ -348,6 +477,9 @@ impl Fighter {
                 Pick::Weapon { weapon: _ } | Pick::Skill { skill: _ } | Pick::Cond { cond: _ } => {
                     if self.picks[..i].contains(p) {
                         return Some(format!("Le choix du niveau {level} est déjà pris."));
+                    }
+                    if requirement(*p).is_some_and(|r| !self.picks[..i].contains(&r)) {
+                        return Some(format!("Le choix du niveau {level} demande d'abord la compétence qui le précède dans l'arbre."));
                     }
                 }
             }

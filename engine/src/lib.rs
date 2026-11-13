@@ -215,6 +215,39 @@ mod tests {
     }
 
     #[test]
+    fn tree_prerequisites() {
+        let mut f = new_fighter("T");
+        f.level = 4;
+        let stats = Stats { str: 4, end: 4, spd: 4, ..Stats::default() };
+        // The flail needs the club first.
+        let flail_first = vec![Pick::Weapon { weapon: WeaponKind::Flail }, Pick::Slot, Pick::Weapon { weapon: WeaponKind::Club }];
+        assert!(set_build(&mut f, stats, flail_first).is_err());
+        let club_first = vec![Pick::Weapon { weapon: WeaponKind::Club }, Pick::Slot, Pick::Weapon { weapon: WeaponKind::Flail }];
+        set_build(&mut f, stats, club_first).unwrap();
+        assert!(f.complete());
+        assert_eq!(even_choices().len(), 24);
+    }
+
+    #[test]
+    fn strong_guard_stops_the_flail() {
+        let mut a = armed("A");
+        a.picks = vec![Pick::Weapon { weapon: WeaponKind::Club }, Pick::Slot, Pick::Weapon { weapon: WeaponKind::Flail }];
+        a.rebuild();
+        a.plan = vec![Rule { cond: Cond::SelfUnarmed, action: Action::Equip(WeaponKind::Flail) }];
+        let mut b = armed("B");
+        b.picks = vec![Pick::Skill { skill: Skill::Shield }, Pick::Slot, Pick::Skill { skill: Skill::StrongGuard }];
+        b.rebuild();
+        b.plan = vec![Rule { cond: Cond::Always, action: Action::Guard }];
+        let blocked = |r: &combat::FightResult| r.events.iter().filter(|e| e.who == 0 && e.blocked).count();
+        let with = fight(&a, &b);
+        b.picks[2] = Pick::Skill { skill: Skill::Brace };
+        b.rebuild();
+        let without = fight(&a, &b);
+        assert!(blocked(&with) > 0);
+        assert_eq!(blocked(&without), 0);
+    }
+
+    #[test]
     fn old_saves_convert() {
         let old = r#"{"name":"Vieux","level":3,"xp":1,"pending":0,"str":5,"agi":4,"spd":3,"end":4,
             "weapons":["sword"],"skills":["toughness"],"plan":[],"stance":"balanced","wins":2,"losses":1}"#;

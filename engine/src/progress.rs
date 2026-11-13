@@ -44,6 +44,7 @@ pub struct BuildInfo {
     pub odd: Vec<Pick>,
     /// Choices offered on even levels (weapon or skill).
     pub even: Vec<Pick>,
+    pub tree: &'static [Branch],
 }
 
 pub fn odd_choices() -> Vec<Pick> {
@@ -51,11 +52,7 @@ pub fn odd_choices() -> Vec<Pick> {
 }
 
 pub fn even_choices() -> Vec<Pick> {
-    ALL_WEAPONS
-        .iter()
-        .map(|w| Pick::Weapon { weapon: *w })
-        .chain(ALL_SKILLS.iter().map(|s| Pick::Skill { skill: *s }))
-        .collect()
+    TREE.iter().flat_map(|b| b.nodes.iter().map(|n| n.pick)).collect()
 }
 
 pub fn build_info(f: &Fighter) -> BuildInfo {
@@ -69,6 +66,7 @@ pub fn build_info(f: &Fighter) -> BuildInfo {
         issue: f.build_issue(),
         odd: odd_choices(),
         even: even_choices(),
+        tree: &TREE,
     }
 }
 
@@ -166,6 +164,7 @@ fn random_build(f: &mut Fighter, rng: &mut Rng) {
             .into_iter()
             .filter(|p| *p == Pick::Slot || !f.picks.contains(p))
             .filter(|p| *p != Pick::Slot || f.slots() < MAX_RULES)
+            .filter(|p| requirement(*p).is_none_or(|r| f.picks.contains(&r)))
             .collect();
         if pool.is_empty() {
             break;

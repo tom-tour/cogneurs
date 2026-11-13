@@ -10,12 +10,31 @@ const WEAPONS = {
   net: ['Filet', "À lancer une fois : immobilise l'adversaire un tour."],
 };
 const SKILLS = {
-  shield: ['Bouclier', 'Jauge de blocage de 12 par coup, et « Se protéger » bloque 75 % au lieu de 50 %.'],
-  potion: ['Potion', 'Une potion par combat : rend 40 % des PV.'],
   power_strike: ['Coup puissant', 'Dégâts ×2, recharge de 3 tours.'],
-  disarm: ['Désarmement', "Fait tomber l'arme adverse (perdue pour le combat). Recharge 3 tours."],
+  shield: ['Bouclier', 'Jauge de blocage de 12 par coup, et « Se protéger » bloque 75 % au lieu de 50 %.'],
+  strong_guard: ['Garde renforcée', 'Quand tu te protèges, le fléau ne traverse plus ta garde.'],
+  brace: ['Encaisser', 'Les coups puissants reçus font ×1,5 au lieu de ×2.'],
+  precise_strikes: ['Coups précis', 'Tes critiques font ×2 au lieu de ×1,5.'],
+  ice_blood: ['Sang glacé', 'Les critiques reçus font 0,25 de moins (×1,25 au lieu de ×1,5).'],
   counter: ['Riposte', 'Jauge de riposte : +40 par esquive, +60 par coup paré en garde.'],
+  sharp_riposte: ['Riposte affûtée', 'Tes ripostes font 100 % des dégâts au lieu de 60 %.'],
+  disarm: ['Désarmement', "Fait tomber l'arme adverse (perdue pour le combat). Recharge 3 tours."],
+  resist: ['Résister', 'Compte comme 2 points de Ténacité en plus face au contrôle.'],
+  break_free: ['Se libérer', 'Sonné ou pris au filet, tu ne perds que la moitié d’un tour.'],
+  grip: ['Poigne', "Désarmé, ton arme tombe à tes pieds : une règle « Prendre » peut la ramasser."],
   fury: ['Furie', '+40 % de dégâts sous 30 % de PV.'],
+  bloodlust: ['Frapper blessé', '+20 % de dégâts contre un adversaire sous 50 % de PV.'],
+  relentless: ['Acharnement', '+25 % de dégâts contre un adversaire immobilisé.'],
+  potion: ['Potion', 'Une potion par combat : rend 40 % des PV.'],
+  regen: ['Régénération', '+2 PV au début de chacun de tes tours.'],
+  last_stand: ['Tenir bon', '-25 % de dégâts reçus sous 30 % de PV.'],
+};
+// Skill tree branches, in opposed pairs (offense, then the defense that answers it).
+const BRANCHES = {
+  power: 'Puissance', rampart: 'Rempart',
+  finesse: 'Finesse', composure: 'Sang-froid',
+  control: 'Contrôle', tenacity: 'Ténacité',
+  rage: 'Rage', survival: 'Survie',
 };
 // Opposed pairs: one attack point cancels exactly one defense point.
 const STATS = {
@@ -259,6 +278,26 @@ async function guarded(fn) {
   try { return await fn(); } catch (e) { toast(e.message); return undefined; }
 }
 
+const pickName = (p) => (p.k === 'weapon' ? WEAPONS[p.weapon][0] : p.k === 'skill' ? SKILLS[p.skill][0] : pickText(p)[0]);
+
+/** The skill tree, two opposed branches per row, with what the draft owns. */
+function renderTree(tree, owned) {
+  const has = (p) => owned.includes(JSON.stringify(p));
+  const box = $('#build-tree');
+  box.replaceChildren();
+  for (const b of tree) {
+    box.append(el('div', { class: `branch ${b.key}` },
+      el('h4', {}, BRANCHES[b.key]),
+      b.nodes.map((n) => {
+        const state = has(n.pick) ? 'own' : !n.req || has(n.req) ? 'open' : 'locked';
+        const [, desc] = pickText(n.pick);
+        return el('div', { class: `node ${state}${n.req ? ' child' : ''}`, title: desc },
+          el('b', {}, pickName(n.pick), n.pick.k === 'weapon' ? el('small', {}, ' arme') : null),
+          el('span', {}, desc));
+      })));
+  }
+}
+
 function pickText(p) {
   if (p.k === 'slot') return ['+1 place de règle', `Ton plan peut contenir une règle de plus (${3 + MAX_SLOT_PICKS} au maximum).`];
   if (p.k === 'cond') { const c = condDef(p.cond.k); return [`Condition : ${c[1]}`, c[4]]; }
@@ -346,7 +385,7 @@ function renderSheet(f) {
     el('h3', {}, 'Équipement'),
     chipList(f),
     el('p', { class: 'record' }, `${f.wins} victoire${f.wins > 1 ? 's' : ''} · ${f.losses} défaite${f.losses > 1 ? 's' : ''}`),
-    el('p', { class: 'hint' }, 'Victoire : +2 XP. Défaite : +1 XP. Niveaux impairs : +2 points et une place de règle ou une condition. Niveaux pairs : une arme ou une compétence.')));
+    el('p', { class: 'hint' }, 'Victoire : +2 XP. Défaite : +1 XP. Niveaux impairs : +2 points et une place de règle ou une condition. Niveaux pairs : une case de l’arbre de compétences.')));
 }
 
 let planTimer = null;
@@ -482,13 +521,27 @@ function openBuild() {
       const others = draft.picks.filter((x, j) => x && j !== i);
       const taken = new Set(others.filter((x) => x.k !== 'slot').map(key));
       const slotsTaken = others.filter((x) => x.k === 'slot').length;
-      const opts = (level % 2 ? inf.odd : inf.even).filter((x) => !taken.has(key(x)) && !(x.k === 'slot' && slotsTaken >= MAX_SLOT_PICKS));
+      let choices;
+      if (level % 2) {
+        const opts = inf.odd.filter((x) => !taken.has(key(x)) && !(x.k === 'slot' && slotsTaken >= MAX_SLOT_PICKS));
+        choices = opts.map((x) => el('option', { value: key(x), selected: key(x) === key(p) }, pickText(x)[0]));
+      } else {
+        // Tree nodes, grouped by branch; a node needs its prerequisite at an earlier level.
+        const before = new Set(draft.picks.slice(0, i).filter(Boolean).map(key));
+        choices = inf.tree.map((b) => el('optgroup', { label: BRANCHES[b.key] },
+          b.nodes.filter((n) => !taken.has(key(n.pick))).map((n) => {
+            const locked = n.req && !before.has(key(n.req));
+            return el('option', { value: key(n.pick), selected: key(n.pick) === key(p), disabled: locked && key(n.pick) !== key(p) },
+              locked ? `🔒 ${pickText(n.pick)[0]} (après ${pickName(n.req)})` : pickText(n.pick)[0]);
+          })));
+      }
       const sel = el('select', { disabled: firstHole >= 0 && i > firstHole },
-        el('option', { value: '' }, '— à choisir —'),
-        opts.map((x) => el('option', { value: key(x), selected: key(x) === key(p) }, pickText(x)[0])));
+        el('option', { value: '' }, '— à choisir —'), choices);
       sel.onchange = () => { draft.picks[i] = sel.value ? JSON.parse(sel.value) : null; render(); };
       return el('li', {}, el('span', { class: 'lv' }, `Niveau ${level}`), sel, el('span', { class: 'desc' }, p ? pickText(p)[1] : ''));
     }));
+
+    renderTree(inf.tree, draft.picks.filter(Boolean).map(key));
 
     let issue;
     try { issue = info(api('set_build', { fighter: f, stats: draft.stats, picks: chosen() })).issue; } catch (e) { issue = e.message; }
