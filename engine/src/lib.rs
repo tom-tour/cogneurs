@@ -20,8 +20,9 @@ enum Call {
     SetBuild { fighter: Fighter, stats: Stats, picks: Vec<Pick> },
     Record { fighter: Fighter, won: bool },
     Opponents { fighter: Fighter, seed: u64 },
-    Fight { a: Fighter, b: Fighter },
-    Predict { a: Fighter, b: Fighter, n: u32, seed: u64 },
+    SetPresets { fighter: Fighter, presets: Vec<Preset>, attack: usize, defense: usize },
+    /// `a` attacks with its preset `preset`, `b` defends with its defense preset.
+    Fight { a: Fighter, b: Fighter, preset: usize },
     /// Loads a saved fighter (converting older saves) and returns it.
     Load { fighter: Fighter },
 }
@@ -43,8 +44,17 @@ pub fn handle(request: &str) -> String {
             json!(fighter)
         }
         Call::Opponents { fighter, seed } => json!(progress::gen_opponents(&fighter, seed)),
-        Call::Fight { a, b } => json!(combat::fight(&a, &b)),
-        Call::Predict { a, b, n, seed } => json!(progress::predict(&a, &b, n.min(500), seed)),
+        Call::SetPresets { mut fighter, presets, attack, defense } => {
+            match progress::set_presets(&mut fighter, presets, attack, defense) {
+                Ok(()) => json!(fighter),
+                Err(e) => return json!({ "err": e }).to_string(),
+            }
+        }
+        Call::Fight { a, b, preset } => json!({
+            "result": combat::duel(&a, preset, &b),
+            "kit": a.kit(preset),
+            "foe_kit": b.kit(b.defense),
+        }),
         Call::Load { fighter } => json!(fighter),
     };
     json!({ "ok": ok }).to_string()
@@ -96,7 +106,7 @@ mod ffi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use combat::fight;
+    use combat::{duel, fight};
     use progress::*;
 
     /// Level 4 sword fighter with a potion, every point spent.
@@ -118,8 +128,8 @@ mod tests {
     fn fights_are_deterministic() {
         let a = gen_opponent(3, 1);
         let b = gen_opponent(3, 2);
-        let r1 = serde_json::to_string(&fight(&a, &b)).unwrap();
-        let r2 = serde_json::to_string(&fight(&a, &b)).unwrap();
+        let r1 = serde_json::to_string(&duel(&a, 0, &b)).unwrap();
+        let r2 = serde_json::to_string(&duel(&a, 0, &b)).unwrap();
         assert_eq!(r1, r2);
     }
 
@@ -128,7 +138,10 @@ mod tests {
         for s in 0..200 {
             let f = gen_opponent(1 + (s % 15) as u32, s);
             assert!(f.complete(), "level {}: {:?}", f.level, f.build_issue());
-            assert!(f.plan.len() <= f.slots());
+            let p = &f.presets[0];
+            assert!(p.plan.len() <= f.slots());
+            assert!(p.weapons.len() <= CARRY_WEAPONS && p.skills.len() <= CARRY_SKILLS);
+            assert!(p.weapons.iter().all(|w| f.weapons.contains(w)));
         }
     }
 
@@ -137,7 +150,7 @@ mod tests {
         for s in 0..300 {
             let a = gen_opponent(1 + (s % 8) as u32, s);
             let b = gen_opponent(1 + (s % 5) as u32, s + 1000);
-            let r = fight(&a, &b);
+            let r = duel(&a, 0, &b);
             assert_eq!(r.events.last().unwrap().kind, "end");
         }
     }
@@ -269,8 +282,75 @@ mod tests {
         let built: Value = serde_json::from_str(&handle(&req)).unwrap();
         let fighter = built["ok"].clone();
         assert_eq!(fighter["stats"]["str"], 4);
-        let req = json!({"fn":"fight","args":{"a":fighter,"b":fighter}}).to_string();
+        let req = json!({"fn":"fight","args":{"a":fighter,"b":fighter,"preset":0}}).to_string();
         let r: Value = serde_json::from_str(&handle(&req)).unwrap();
-        assert!(r["ok"]["events"].as_array().unwrap().len() > 2);
+        assert!(r["ok"]["result"]["events"].as_array().unwrap().len() > 2);
+        assert_eq!(r["ok"]["foe_kit"]["plan"][0]["action"]["k"], "equip_best");
+        // The stored form has no top-level plan: it lives in the presets.
+        assert!(fighter.get("plan").is_none());
+    }
+
+    /// Level 9 fighter owning four weapons.
+    fn collector() -> Fighter {
+        let mut f = new_fighter("C");
+        f.level = 9;
+        let stats = Stats { str: 4, tou: 4, spd: 6, end: 4, ..Stats::default() };
+        let w = |weapon| Pick::Weapon { weapon };
+        let picks = vec![
+            w(WeaponKind::Club), Pick::Slot, w(WeaponKind::Sword), Pick::Slot,
+            w(WeaponKind::Spear), Pick::Slot, w(WeaponKind::Flail),
+            Pick::Slot,
+        ];
+        set_build(&mut f, stats, picks).unwrap();
+        assert!(f.complete(), "{:?}", f.build_issue());
+        f
+    }
+
+    #[test]
+    fn carry_limits() {
+        let mut f = collector();
+        assert_eq!(f.weapons.len(), 4);
+        // New items fill the preset up to the limit only.
+        assert_eq!(f.presets[0].weapons, vec![WeaponKind::Club, WeaponKind::Sword, WeaponKind::Spear]);
+        let mut p = f.presets[0].clone();
+        p.weapons.push(WeaponKind::Flail);
+        assert!(set_presets(&mut f, vec![p.clone()], 0, 0).is_err());
+        // Carrying only the flail: "take my best weapon" can only find it.
+        p.weapons = vec![WeaponKind::Flail];
+        p.plan = default_plan();
+        set_presets(&mut f, vec![p], 0, 0).unwrap();
+        let foe = collector();
+        let r = duel(&f, 0, &foe);
+        assert!(r.events.iter().filter(|e| e.who == 0 && e.kind == "equip").all(|e| e.weapon == Some(WeaponKind::Flail)));
+        // Something not owned cannot be carried.
+        let mut q = f.presets[0].clone();
+        q.weapons = vec![WeaponKind::Knife];
+        assert!(set_presets(&mut f, vec![q], 0, 0).is_err());
+    }
+
+    #[test]
+    fn defense_preset_is_used() {
+        let a = collector();
+        let mut b = collector();
+        let mut guard = b.presets[0].clone();
+        guard.name = "Garde".into();
+        guard.plan = vec![Rule { cond: Cond::Always, action: Action::Guard }];
+        let attack = b.presets[0].clone();
+        set_presets(&mut b, vec![attack, guard], 0, 1).unwrap();
+        let r = duel(&a, 0, &b);
+        assert!(r.events.iter().any(|e| e.who == 1 && e.kind == "guard"));
+        let shown = public_view(&b);
+        assert!(shown.presets.is_empty() && shown.weapons.len() == 4);
+    }
+
+    #[test]
+    fn old_plan_becomes_a_preset() {
+        let old = r#"{"name":"P","level":2,"stats":{"str":4,"end":4,"spd":2},"picks":[{"k":"weapon","weapon":"sword"}],
+            "plan":[{"cond":{"k":"always"},"action":{"k":"guard"}}],"stance":"defensive"}"#;
+        let f: Fighter = serde_json::from_str(old).unwrap();
+        assert_eq!(f.presets.len(), 1);
+        assert_eq!(f.presets[0].weapons, vec![WeaponKind::Sword]);
+        assert_eq!(f.presets[0].stance, Stance::Defensive);
+        assert_eq!(f.presets[0].plan[0].action, Action::Guard);
     }
 }

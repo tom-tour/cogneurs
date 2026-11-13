@@ -7,7 +7,7 @@
 use serde::Serialize;
 
 use crate::data::*;
-use crate::rng::{hash_str, Rng};
+use crate::rng::Rng;
 
 pub fn default_plan() -> Vec<Rule> {
     vec![Rule { cond: Cond::SelfUnarmed, action: Action::EquipBest }]
@@ -23,7 +23,10 @@ pub fn new_fighter(name: &str) -> Fighter {
         picks: Vec::new(),
         weapons: Vec::new(),
         skills: Vec::new(),
-        plan: default_plan(),
+        presets: vec![Preset { name: "Principal".into(), plan: default_plan(), ..Preset::default() }],
+        attack: 0,
+        defense: 0,
+        plan: Vec::new(),
         stance: Stance::Balanced,
         wins: 0,
         losses: 0,
@@ -77,11 +80,51 @@ pub fn set_build(f: &mut Fighter, stats: Stats, picks: Vec<Pick>) -> Result<(), 
     g.stats = stats;
     g.picks = picks;
     g.rebuild();
+    g.carry_new(&f.weapons, &f.skills);
+    g.clamp_presets();
     // Limit errors come first; "Il reste..." only means unfinished.
     if let Some(issue) = g.build_issue().filter(|i| !i.starts_with("Il reste")) {
         return Err(issue);
     }
     *f = g;
+    Ok(())
+}
+
+/// Replaces the presets, and which ones attack and defend.
+pub fn set_presets(f: &mut Fighter, mut presets: Vec<Preset>, attack: usize, defense: usize) -> Result<(), String> {
+    if presets.is_empty() || presets.len() > MAX_PRESETS {
+        return Err(format!("Entre 1 et {MAX_PRESETS} préréglages."));
+    }
+    if attack >= presets.len() || defense >= presets.len() {
+        return Err("Préréglage inconnu.".into());
+    }
+    for (i, p) in presets.iter_mut().enumerate() {
+        p.name = p.name.trim().chars().take(20).collect();
+        if p.name.is_empty() {
+            p.name = format!("Préréglage {}", i + 1);
+        }
+        let label = p.name.clone();
+        if p.weapons.len() > CARRY_WEAPONS || p.skills.len() > CARRY_SKILLS {
+            return Err(format!("« {label} » : {CARRY_WEAPONS} armes et {CARRY_SKILLS} compétences au maximum."));
+        }
+        if p.weapons.iter().any(|w| !f.weapons.contains(w)) || p.skills.iter().any(|s| !f.skills.contains(s)) {
+            return Err(format!("« {label} » emporte quelque chose que tu n'as pas."));
+        }
+        for (j, w) in p.weapons.iter().enumerate() {
+            if p.weapons[..j].contains(w) {
+                return Err(format!("« {label} » emporte deux fois la même arme."));
+            }
+        }
+        for (j, s) in p.skills.iter().enumerate() {
+            if p.skills[..j].contains(s) {
+                return Err(format!("« {label} » emporte deux fois la même compétence."));
+            }
+        }
+        p.plan.truncate(MAX_RULES);
+    }
+    f.presets = presets;
+    f.attack = attack;
+    f.defense = defense;
     Ok(())
 }
 
@@ -181,36 +224,29 @@ pub fn gen_opponent(level: u32, seed: u64) -> Fighter {
     let mut f = new_fighter(&name);
     f.level = level.max(1);
     random_build(&mut f, &mut rng);
-    f.stance = *rng.pick(&[Stance::Aggressive, Stance::Balanced, Stance::Balanced, Stance::Defensive]);
-    f.plan = ai_plan(&f, &mut rng);
+    let mut weapons = f.weapons.clone();
+    let mut skills = f.skills.clone();
+    while weapons.len() > CARRY_WEAPONS {
+        weapons.remove(rng.below(weapons.len()));
+    }
+    while skills.len() > CARRY_SKILLS {
+        skills.remove(rng.below(skills.len()));
+    }
+    let stance = *rng.pick(&[Stance::Aggressive, Stance::Balanced, Stance::Balanced, Stance::Defensive]);
+    f.presets = vec![Preset { name: "Combat".into(), weapons, skills, plan: Vec::new(), stance }];
+    let plan = ai_plan(&f.loadout(0), &mut rng);
+    f.presets[0].plan = plan;
     f
 }
 
-/// Fights are fully determined, so a prediction cannot just replay the real
-/// fight: the enemy plan is hidden. It plays `a` against `n` plausible plans
-/// for `b` (built from b's visible gear) and returns the share of wins.
-pub fn predict(a: &Fighter, b: &Fighter, n: u32, seed: u64) -> f32 {
-    let mut rng = Rng::new(seed ^ hash_str(&b.name));
-    let mut guess = b.clone();
-    let wins = (0..n)
-        .filter(|_| {
-            guess.plan = ai_plan(b, &mut rng);
-            crate::combat::fight(a, &guess).winner == 0
-        })
-        .count();
-    wins as f32 / n.max(1) as f32
-}
-
-/// What other players may see of a fighter: everything but its plan.
+/// What other players may see before a fight: stats and everything owned,
+/// but not the presets (what is carried, the plans, the defense).
 pub fn public_view(f: &Fighter) -> Fighter {
     let mut p = f.clone();
-    p.plan.clear();
+    p.presets.clear();
+    p.attack = 0;
+    p.defense = 0;
     p
-}
-
-/// Plans longer than the maximum slot count are cut.
-pub fn sanitize_plan(plan: &mut Vec<Rule>) {
-    plan.truncate(MAX_RULES);
 }
 
 pub fn gen_opponents(f: &Fighter, seed: u64) -> Vec<Fighter> {

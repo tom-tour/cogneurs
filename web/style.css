@@ -87,8 +87,6 @@ input { width: 100%; margin: 8px 0; }
 .opp .mini { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; font-size: 12px; color: var(--muted); margin: 4px 0; }
 .opp .mini b { color: var(--text); }
 .opp .actions { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
-.pred { font-size: 13px; }
-.pred.good { color: var(--good); } .pred.bad { color: var(--bad); } .pred.mid { color: var(--accent2); }
 
 /* Overlays */
 .overlay {
@@ -211,3 +209,18 @@ ol.plain, #board { margin: 0; padding-left: 20px; font-size: 13px; }
 .node.open { border-color: var(--accent); }
 .node.locked { opacity: .5; }
 @media (max-width: 560px) { .tree { grid-template-columns: 1fr; } }
+
+/* Presets */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+.tab { background: transparent; color: var(--text); border-color: var(--line); font-weight: 500; padding: 4px 10px; font-size: 13px; }
+.tab.active { background: var(--panel2); border-color: var(--accent); font-weight: 700; }
+.tab.add { color: var(--muted); border-style: dashed; }
+.preset-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.preset-head #preset-name { flex: 1 1 160px; width: auto; margin: 0; }
+.preset-head label { display: flex; align-items: center; gap: 4px; font-size: 13px; white-space: nowrap; }
+.preset-head input[type=checkbox] { width: auto; margin: 0; }
+.carry-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 4px 0; font-size: 13px; }
+.carry-row > .muted:first-child { min-width: 110px; }
+.chip.toggle { cursor: pointer; color: var(--muted); font-weight: 500; }
+.chip.toggle.on { color: var(--text); background: var(--panel); box-shadow: inset 0 0 0 1px currentColor; }
+.chip.toggle:disabled { opacity: .4; cursor: not-allowed; }

@@ -24,8 +24,8 @@ use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
-use cogneurs_engine::combat::{fight, FightResult};
-use cogneurs_engine::data::{Fighter, Pick, Rule, Stance, Stats};
+use cogneurs_engine::combat::{duel, FightResult};
+use cogneurs_engine::data::{Fighter, Pick, Preset, Stats};
 use cogneurs_engine::progress;
 use cogneurs_engine::rng::Rng;
 
@@ -286,18 +286,18 @@ fn unknown() -> ApiError {
 }
 
 #[derive(Deserialize)]
-struct PlanReq {
-    plan: Vec<Rule>,
-    stance: Stance,
+struct PresetsReq {
+    presets: Vec<Preset>,
+    attack: usize,
+    defense: usize,
 }
 
-async fn put_plan(State(app): State<Arc<App>>, headers: HeaderMap, Json(mut req): Json<PlanReq>) -> ApiResult<MeView> {
+/// Presets (carried gear, plan and stance), and which ones attack and defend.
+async fn put_presets(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): Json<PresetsReq>) -> ApiResult<MeView> {
     let t = token(&headers)?;
-    progress::sanitize_plan(&mut req.plan);
     let mut db = app.db.lock().await;
     let p = db.players.get_mut(&t).ok_or_else(unknown)?;
-    p.fighter.plan = req.plan;
-    p.fighter.stance = req.stance;
+    progress::set_presets(&mut p.fighter, req.presets, req.attack, req.defense).map_err(|e| bad(&e))?;
     app.persist(&db).await;
     Ok(Json(me_view(&app, &db, &db.players[&t])))
 }
@@ -332,13 +332,17 @@ async fn reroll(State(app): State<Arc<App>>, headers: HeaderMap) -> ApiResult<Me
 #[derive(Deserialize)]
 struct FightReq {
     index: usize,
+    /// Attack preset; the last one used when missing.
+    preset: Option<usize>,
 }
 
 #[derive(Serialize)]
 struct FightRes {
     result: FightResult,
-    /// The opponent with its plan, revealed after the fight.
     foe: Fighter,
+    /// What each side carried and its plan, revealed after the fight.
+    kit: Preset,
+    foe_kit: Preset,
     me: MeView,
 }
 
@@ -363,10 +367,16 @@ async fn post_fight(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): 
         ),
     };
     let me = p.fighter.clone();
-    let result = fight(&me, &foe);
+    let preset = req.preset.unwrap_or(me.attack);
+    if preset >= me.presets.len() {
+        return Err(bad("Préréglage inconnu."));
+    }
+    let result = duel(&me, preset, &foe);
     let won = result.winner == 0;
+    let (kit, foe_kit) = (me.kit(preset), foe.kit(foe.defense));
 
     let mut updated = me.clone();
+    updated.attack = preset;
     progress::record(&mut updated, won);
     let offers = make_offers(&db, &updated, seed);
     db.fights.push(FightLog { at: now(), attacker: me.name.clone(), defender: foe.name.clone(), bot, winner: result.winner });
@@ -377,7 +387,7 @@ async fn post_fight(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): 
     p.fights_today = used + 1;
     app.persist(&db).await;
     let me = me_view(&app, &db, &db.players[&t]);
-    Ok(Json(FightRes { result, foe, me }))
+    Ok(Json(FightRes { result, foe: progress::public_view(&foe), kit, foe_kit, me }))
 }
 
 #[derive(Serialize)]
@@ -431,7 +441,7 @@ async fn main() {
         .route("/health", get(health))
         .route("/register", post(register))
         .route("/me", get(get_me))
-        .route("/me/plan", put(put_plan))
+        .route("/me/presets", put(put_presets))
         .route("/me/build", put(put_build))
         .route("/me/reroll", post(reroll))
         .route("/fight", post(post_fight))

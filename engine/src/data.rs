@@ -331,6 +331,22 @@ impl Pick {
     }
 }
 
+/// A loadout chosen before a fight: what the fighter carries and how it
+/// fights with it. Only carried weapons and skills exist in the fight.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug, Default)]
+#[serde(default)]
+pub struct Preset {
+    pub name: String,
+    pub weapons: Vec<WeaponKind>,
+    pub skills: Vec<Skill>,
+    pub plan: Vec<Rule>,
+    pub stance: Stance,
+}
+
+pub const CARRY_WEAPONS: usize = 3;
+pub const CARRY_SKILLS: usize = 3;
+pub const MAX_PRESETS: usize = 4;
+
 pub const START_POINTS: i32 = 10;
 pub const BASE_SLOTS: usize = 3;
 pub const MAX_RULES: usize = 8;
@@ -361,11 +377,19 @@ pub struct Fighter {
     pub stats: Stats,
     /// One pick per level gained, in order (level 2 first).
     pub picks: Vec<Pick>,
-    /// Derived from the picks.
+    /// Owned weapons, derived from the picks (carried ones in a loadout).
     pub weapons: Vec<WeaponKind>,
-    /// Derived from the picks.
+    /// Owned skills, derived from the picks (carried ones in a loadout).
     pub skills: Vec<Skill>,
+    pub presets: Vec<Preset>,
+    /// Preset used when attacking (the last one chosen).
+    pub attack: usize,
+    /// Preset used when attacked.
+    pub defense: usize,
+    /// Plan and stance in play: only set on a loadout, never stored.
+    #[serde(skip)]
     pub plan: Vec<Rule>,
+    #[serde(skip)]
     pub stance: Stance,
     pub wins: u32,
     pub losses: u32,
@@ -385,6 +409,13 @@ struct FighterSer {
     stats: Stats,
     #[serde(default)]
     picks: Vec<Pick>,
+    #[serde(default)]
+    presets: Vec<Preset>,
+    #[serde(default)]
+    attack: usize,
+    #[serde(default)]
+    defense: usize,
+    /// Before presets: a single plan and stance.
     #[serde(default)]
     plan: Vec<Rule>,
     #[serde(default)]
@@ -406,12 +437,22 @@ impl<'de> Deserialize<'de> for Fighter {
             picks: s.picks,
             weapons: Vec::new(),
             skills: Vec::new(),
-            plan: s.plan,
-            stance: s.stance,
+            presets: s.presets,
+            attack: s.attack,
+            defense: s.defense,
+            plan: Vec::new(),
+            stance: Stance::Balanced,
             wins: s.wins,
             losses: s.losses,
         };
         f.rebuild();
+        if f.presets.is_empty() {
+            // The old single plan becomes the first preset, carrying what fits.
+            let plan = if s.plan.is_empty() { crate::progress::default_plan() } else { s.plan };
+            f.presets.push(Preset { name: "Principal".into(), plan, stance: s.stance, ..Preset::default() });
+            f.carry_new(&[], &[]);
+        }
+        f.clamp_presets();
         Ok(f)
     }
 }
@@ -436,6 +477,69 @@ impl Fighter {
                 _ => {}
             }
         }
+    }
+
+    /// Puts weapons and skills owned now but not in `old_*` into every preset
+    /// that still has room, so a new item is carried right away.
+    pub fn carry_new(&mut self, old_weapons: &[WeaponKind], old_skills: &[Skill]) {
+        let new_w: Vec<_> = self.weapons.iter().copied().filter(|w| !old_weapons.contains(w)).collect();
+        let new_s: Vec<_> = self.skills.iter().copied().filter(|s| !old_skills.contains(s)).collect();
+        for p in &mut self.presets {
+            for w in &new_w {
+                if p.weapons.len() < CARRY_WEAPONS && !p.weapons.contains(w) {
+                    p.weapons.push(*w);
+                }
+            }
+            for s in &new_s {
+                if p.skills.len() < CARRY_SKILLS && !p.skills.contains(s) {
+                    p.skills.push(*s);
+                }
+            }
+        }
+    }
+
+    /// Drops carried items no longer owned, and keeps indexes in range.
+    pub fn clamp_presets(&mut self) {
+        if self.presets.is_empty() {
+            self.presets.push(Preset { name: "Principal".into(), plan: crate::progress::default_plan(), ..Preset::default() });
+        }
+        self.presets.truncate(MAX_PRESETS);
+        let (weapons, skills) = (self.weapons.clone(), self.skills.clone());
+        for p in &mut self.presets {
+            let mut seen = Vec::new();
+            p.weapons.retain(|w| weapons.contains(w) && !seen.contains(w) && { seen.push(*w); true });
+            p.weapons.truncate(CARRY_WEAPONS);
+            let mut seen = Vec::new();
+            p.skills.retain(|s| skills.contains(s) && !seen.contains(s) && { seen.push(*s); true });
+            p.skills.truncate(CARRY_SKILLS);
+            p.plan.truncate(MAX_RULES);
+        }
+        let last = self.presets.len() - 1;
+        self.attack = self.attack.min(last);
+        self.defense = self.defense.min(last);
+    }
+
+    /// The fighter as it enters a fight with preset `i`: only carried
+    /// weapons and skills, with the preset's plan and stance.
+    pub fn loadout(&self, i: usize) -> Fighter {
+        let mut f = self.clone();
+        if let Some(p) = self.presets.get(i).or(self.presets.first()) {
+            f.weapons = p.weapons.iter().copied().filter(|w| self.weapons.contains(w)).take(CARRY_WEAPONS).collect();
+            f.skills = p.skills.iter().copied().filter(|s| self.skills.contains(s)).take(CARRY_SKILLS).collect();
+            f.plan = p.plan.clone();
+            f.stance = p.stance;
+        } else {
+            f.weapons.clear();
+            f.skills.clear();
+        }
+        f
+    }
+
+    /// The preset a loadout came from, as revealed after a fight.
+    pub fn kit(&self, i: usize) -> Preset {
+        let l = self.loadout(i);
+        let name = self.presets.get(i).or(self.presets.first()).map(|p| p.name.clone()).unwrap_or_default();
+        Preset { name, weapons: l.weapons, skills: l.skills, plan: l.plan, stance: l.stance }
     }
 
     /// Rules the plan may use.

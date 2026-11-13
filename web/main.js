@@ -52,6 +52,8 @@ const STATS = {
 const STAT_KEYS = Object.keys(STATS);
 const STAT_PAIRS = [['str', 'tou', '↔'], ['acc', 'eva', '↔'], ['crit', 'cool', '↔'], ['ctl', 'ten', '↔'], ['spd', 'end', '·']];
 const MAX_SLOT_PICKS = 5;
+const CARRY = 3; // weapons, and skills, a preset may carry
+const MAX_PRESETS = 4;
 const STANCES = {
   aggressive: ['Agressive', "+20 % de dégâts, -5 % d'esquive"],
   balanced: ['Équilibrée', 'Aucun bonus'],
@@ -102,7 +104,8 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } },
   del(k) { try { localStorage.removeItem(k); } catch { /* private mode */ } },
 };
-const stripPlan = (f) => ({ ...f, plan: [] });
+/** What an opponent shows before the fight: no presets (plans, carried gear, defense). */
+const publicView = (f) => ({ ...f, presets: [], attack: 0, defense: 0 });
 
 // ---------- Backends ----------
 // Both return the same "view": { fighter, opponents: [{fighter, bot}], history, fights_left }.
@@ -124,7 +127,7 @@ const Local = {
     const f = this.s.fighter;
     return {
       fighter: f,
-      opponents: this.s.opponents.map((o) => ({ fighter: stripPlan(o), bot: true })),
+      opponents: this.s.opponents.map((o) => ({ fighter: publicView(o), bot: true })),
       history: this.s.history,
       fights_left: null,
     };
@@ -137,8 +140,8 @@ const Local = {
     this.save();
     return this.view();
   },
-  async savePlan(plan, stance) {
-    Object.assign(this.s.fighter, { plan, stance });
+  async savePresets(presets, attack, defense) {
+    this.s.fighter = api('set_presets', { fighter: this.s.fighter, presets, attack, defense });
     this.save();
     return this.view();
   },
@@ -148,18 +151,18 @@ const Local = {
     return this.view();
   },
   async reroll() { this.reroll_(); this.save(); return this.view(); },
-  async fight(index) {
+  async fight(index, preset) {
     const me = this.s.fighter;
     const issue = info(me).issue;
     if (issue) throw new Error(`Termine d'abord tes améliorations : ${issue}`);
     const foe = this.s.opponents[index];
-    const result = api('fight', { a: me, b: foe });
+    const { result, kit, foe_kit } = api('fight', { a: me, b: foe, preset });
     const won = result.winner === 0;
-    this.s.fighter = api('record', { fighter: me, won });
+    this.s.fighter = api('record', { fighter: { ...me, attack: preset }, won });
     this.s.history = [{ attacker: me.name, defender: foe.name, won, attacked: true }, ...this.s.history].slice(0, 10);
     this.reroll_();
     this.save();
-    return { result, foe, me: this.view() };
+    return { result, foe: publicView(foe), kit, foe_kit, me: this.view() };
   },
   async leaderboard() { return null; },
   forget() { store.del(this.key); this.s = null; },
@@ -236,17 +239,18 @@ const Remote = {
     store.set('cogneurs.token', r.token);
     return r.me;
   },
-  savePlan(plan, stance) { return this.req('PUT', '/me/plan', { plan, stance }); },
+  savePresets(presets, attack, defense) { return this.req('PUT', '/me/presets', { presets, attack, defense }); },
   setBuild(stats, picks) { return this.req('PUT', '/me/build', { stats, picks }); },
   reroll() { return this.req('POST', '/me/reroll'); },
-  fight(index) { return this.req('POST', '/fight', { index }); },
+  fight(index, preset) { return this.req('POST', '/fight', { index, preset }); },
   leaderboard() { return this.req('GET', '/leaderboard'); },
   forget() { store.del('cogneurs.token'); },
 };
 
 let backend = Local;
 let view = null;
-let preds = {};
+/** Preset shown in the editor. */
+let editing = 0;
 
 // ---------- Helpers ----------
 const $ = (s) => document.querySelector(s);
@@ -324,15 +328,15 @@ const keyToAction = (key) => {
   const [k, v] = key.split(':');
   return v ? { k, v } : { k };
 };
+function actionText(a) {
+  if (a.k === 'equip') return `Prendre : ${WEAPONS[a.v][0]}`;
+  if (a.k === 'stance') return `Posture : ${STANCES[a.v][0]}`;
+  return ({ attack: 'Attaquer', guard: 'Se protéger', equip_best: 'Prendre sa meilleure arme', throw: 'Lancer son arme', throw_net: 'Lancer le filet', power_strike: 'Coup puissant', disarm: 'Désarmer', potion: 'Boire la potion' })[a.k] || a.k;
+}
 function ruleText(r) {
   const c = CONDS.find((x) => x[0] === r.cond.k);
   const cond = c ? c[1] + (c[2] ? `${r.cond.v} %` : '') : r.cond.k;
-  const a = r.action;
-  let act;
-  if (a.k === 'equip') act = `Prendre : ${WEAPONS[a.v][0]}`;
-  else if (a.k === 'stance') act = `Posture : ${STANCES[a.v][0]}`;
-  else act = ({ attack: 'Attaquer', guard: 'Se protéger', equip_best: 'Prendre sa meilleure arme', throw: 'Lancer son arme', throw_net: 'Lancer le filet', power_strike: 'Coup puissant', disarm: 'Désarmer', potion: 'Boire la potion' })[a.k] || a.k;
-  return `${cond} → ${act}`;
+  return `${cond} → ${actionText(r.action)}`;
 }
 
 // ---------- Screens ----------
@@ -347,7 +351,6 @@ function show(id) {
 function setView(v) {
   if (!v) return;
   view = v;
-  preds = {};
   renderAll();
 }
 
@@ -382,94 +385,163 @@ function renderSheet(f) {
     pairs,
     inf.issue ? el('p', { class: 'warn' }, inf.issue) : null,
     el('button', { class: inf.issue ? '' : 'ghost small', onclick: openBuild }, inf.issue ? 'Faire mes améliorations' : 'Respécialiser'),
-    el('h3', {}, 'Équipement'),
+    el('h3', {}, 'Inventaire'),
     chipList(f),
+    el('p', { class: 'hint' }, `Chaque préréglage emporte au plus ${CARRY} armes et ${CARRY} compétences.`),
     el('p', { class: 'record' }, `${f.wins} victoire${f.wins > 1 ? 's' : ''} · ${f.losses} défaite${f.losses > 1 ? 's' : ''}`),
     el('p', { class: 'hint' }, 'Victoire : +2 XP. Défaite : +1 XP. Niveaux impairs : +2 points et une place de règle ou une condition. Niveaux pairs : une case de l’arbre de compétences.')));
 }
 
 let planTimer = null;
-function planChanged() {
-  preds = {};
-  renderPlan(view.fighter);
-  renderOpponents();
+/** Saves the presets shortly after the last change. */
+function presetsChanged(rerender = true) {
+  const f = view.fighter;
+  if (rerender) { renderPlan(f); renderOpponents(); }
   clearTimeout(planTimer);
-  const { plan, stance } = view.fighter;
   const b = backend;
-  planTimer = setTimeout(() => guarded(() => b.savePlan(plan, stance)), 400);
+  planTimer = setTimeout(() => { planTimer = null; guarded(() => b.savePresets(f.presets, f.attack, f.defense)); }, 400);
+}
+/** Saves now if a change is still waiting. */
+async function flushPresets() {
+  if (planTimer == null) return true;
+  clearTimeout(planTimer);
+  planTimer = null;
+  const f = view.fighter;
+  return (await guarded(() => backend.savePresets(f.presets, f.attack, f.defense))) !== undefined;
 }
 
 function renderPlan(f) {
+  editing = Math.min(editing, f.presets.length - 1);
+  const p = f.presets[editing];
   const slots = info(f).slots;
-  const stanceSel = $('#stance');
-  stanceSel.replaceChildren(...Object.entries(STANCES).map(([k, [n, d]]) => el('option', { value: k, selected: f.stance === k }, `${n} (${d})`)));
-  stanceSel.onchange = () => { f.stance = stanceSel.value; planChanged(); };
 
-  const choices = actionChoices(f);
+  $('#preset-tabs').replaceChildren(
+    ...f.presets.map((q, i) => el('button', {
+      class: `tab${i === editing ? ' active' : ''}`,
+      onclick: () => { editing = i; renderPlan(f); },
+    }, q.name,
+    i === f.attack ? el('span', { class: 'role', title: 'Utilisé pour attaquer' }, ' ⚔') : null,
+    i === f.defense ? el('span', { class: 'role', title: 'Utilisé quand on t’attaque' }, ' 🛡') : null)),
+    f.presets.length < MAX_PRESETS
+      ? el('button', { class: 'tab add', title: 'Nouveau préréglage, copié de celui affiché', onclick: () => {
+        f.presets.push({ ...structuredClone(p), name: `Préréglage ${f.presets.length + 1}` });
+        editing = f.presets.length - 1;
+        presetsChanged();
+      } }, '+ Nouveau')
+      : null);
+
+  const name = $('#preset-name');
+  name.value = p.name;
+  name.oninput = () => { p.name = name.value; presetsChanged(false); };
+  name.onchange = () => renderPlan(f);
+  const role = (id, key) => {
+    const box = $(id);
+    box.checked = f[key] === editing;
+    box.disabled = box.checked;
+    box.onchange = () => { f[key] = editing; presetsChanged(); };
+  };
+  role('#preset-attack', 'attack');
+  role('#preset-defense', 'defense');
+  $('#preset-delete').disabled = f.presets.length < 2;
+  $('#preset-delete').onclick = () => {
+    if (!confirm(`Supprimer le préréglage « ${p.name} » ?`)) return;
+    f.presets.splice(editing, 1);
+    for (const key of ['attack', 'defense']) {
+      if (f[key] === editing) f[key] = 0;
+      else if (f[key] > editing) f[key] -= 1;
+    }
+    editing = Math.max(0, editing - 1);
+    presetsChanged();
+  };
+
+  // Carried gear: a toggle per owned item, up to the limit.
+  const toggles = (owned, carried, names, cls) => owned.map((x) => {
+    const on = carried.includes(x);
+    return el('button', {
+      class: `chip ${cls} toggle${on ? ' on' : ''}`, title: names[x][1], 'aria-pressed': on,
+      disabled: !on && carried.length >= CARRY,
+      onclick: () => {
+        if (on) carried.splice(carried.indexOf(x), 1); else carried.push(x);
+        presetsChanged();
+      },
+    }, on ? '✓ ' : '', names[x][0]);
+  });
+  $('#carry').replaceChildren(
+    el('div', { class: 'carry-row' }, el('span', { class: 'muted' }, `Armes ${p.weapons.length}/${CARRY}`),
+      f.weapons.length ? toggles(f.weapons, p.weapons, WEAPONS, 'w') : el('span', { class: 'muted' }, 'aucune pour l’instant')),
+    el('div', { class: 'carry-row' }, el('span', { class: 'muted' }, `Compétences ${p.skills.length}/${CARRY}`),
+      f.skills.length ? toggles(f.skills, p.skills, SKILLS, 's') : el('span', { class: 'muted' }, 'aucune pour l’instant')));
+
+  const stanceSel = $('#stance');
+  stanceSel.replaceChildren(...Object.entries(STANCES).map(([k, [n, d]]) => el('option', { value: k, selected: p.stance === k }, `${n} (${d})`)));
+  stanceSel.onchange = () => { p.stance = stanceSel.value; presetsChanged(); };
+
+  const choices = actionChoices(p);
   const list = $('#plan');
   list.replaceChildren();
-  f.plan.forEach((r, i) => {
+  p.plan.forEach((r, i) => {
     const usable = CONDS.filter(([k]) => knows(f, k) || k === r.cond.k);
     const condSel = el('select', {}, usable.map(([k, n]) => el('option', { value: k, selected: r.cond.k === k }, knows(f, k) ? n : `🔒 ${n}`)));
     const def = condDef(r.cond.k);
     const thrSel = def && def[2]
       ? el('select', {}, THRESHOLDS.map((t) => el('option', { value: t, selected: r.cond.v === t }, `${t} %`)))
       : null;
-    const actSel = el('select', {}, choices.map(([k, n]) => el('option', { value: k, selected: actionKey(r.action) === k }, n)));
+    const carried = choices.some(([k]) => k === actionKey(r.action));
+    const opts = carried ? choices : [...choices, [actionKey(r.action), `⛔ ${actionText(r.action)} (pas emporté)`]];
+    const actSel = el('select', {}, opts.map(([k, n]) => el('option', { value: k, selected: actionKey(r.action) === k }, n)));
     condSel.onchange = () => {
       const d = CONDS.find((c) => c[0] === condSel.value);
       r.cond = d[2] ? { k: d[0], v: 50 } : { k: d[0] };
-      planChanged();
+      presetsChanged();
     };
-    if (thrSel) thrSel.onchange = () => { r.cond.v = +thrSel.value; planChanged(); };
-    actSel.onchange = () => { r.action = keyToAction(actSel.value); planChanged(); };
+    if (thrSel) thrSel.onchange = () => { r.cond.v = +thrSel.value; presetsChanged(); };
+    actSel.onchange = () => { r.action = keyToAction(actSel.value); presetsChanged(); };
     const move = (d) => () => {
       const j = i + d;
-      if (j < 0 || j >= f.plan.length) return;
-      [f.plan[i], f.plan[j]] = [f.plan[j], f.plan[i]];
-      planChanged();
+      if (j < 0 || j >= p.plan.length) return;
+      [p.plan[i], p.plan[j]] = [p.plan[j], p.plan[i]];
+      presetsChanged();
     };
-    const off = i >= slots || !knows(f, r.cond.k);
-    list.append(el('li', { class: off ? 'off' : '', title: knows(f, r.cond.k) ? null : 'Condition à débloquer : cette règle est ignorée.' }, condSel, thrSel, el('span', { class: 'arrow' }, '→'), actSel,
+    const why = !knows(f, r.cond.k) ? 'Condition à débloquer : cette règle est ignorée.'
+      : !carried ? 'Ce préréglage n’emporte pas ce qu’il faut : cette règle est ignorée.' : null;
+    const off = i >= slots || why;
+    list.append(el('li', { class: off ? 'off' : '', title: why }, condSel, thrSel, el('span', { class: 'arrow' }, '→'), actSel,
       el('span', { class: 'tools' },
         el('button', { class: 'ghost small', title: 'Monter', onclick: move(-1), disabled: i === 0 }, '▲'),
-        el('button', { class: 'ghost small', title: 'Descendre', onclick: move(1), disabled: i === f.plan.length - 1 }, '▼'),
-        el('button', { class: 'ghost small', title: 'Supprimer', onclick: () => { f.plan.splice(i, 1); planChanged(); } }, '✕'))));
+        el('button', { class: 'ghost small', title: 'Descendre', onclick: move(1), disabled: i === p.plan.length - 1 }, '▼'),
+        el('button', { class: 'ghost small', title: 'Supprimer', onclick: () => { p.plan.splice(i, 1); presetsChanged(); } }, '✕'))));
   });
-  $('#add-rule').disabled = f.plan.length >= slots;
-  $('#add-rule').onclick = () => { f.plan.push({ cond: { k: 'always' }, action: { k: 'attack' } }); planChanged(); };
-  $('#slots').textContent = `${Math.min(f.plan.length, slots)} / ${slots} règles utilisées${f.plan.length > slots ? ' (les règles grisées sont ignorées)' : ''}.`;
+  $('#add-rule').disabled = p.plan.length >= slots;
+  $('#add-rule').onclick = () => { p.plan.push({ cond: { k: 'always' }, action: { k: 'attack' } }); presetsChanged(); };
+  $('#slots').textContent = `${Math.min(p.plan.length, slots)} / ${slots} règles utilisées${p.plan.length > slots ? ' (les règles grisées sont ignorées)' : ''}.`;
   // A weapon carried but never drawn is a common trap now that nothing is automatic.
-  const active = f.plan.slice(0, slots).filter((r) => knows(f, r.cond.k));
-  const draws = active.some((r) => r.action.k === 'equip_best' || r.action.k === 'equip');
+  const active = p.plan.slice(0, slots).filter((r) => knows(f, r.cond.k));
+  const draws = active.some((r) => r.action.k === 'equip_best' || (r.action.k === 'equip' && p.weapons.includes(r.action.v)));
   const warn = $('#plan-warn');
-  warn.hidden = draws || !f.weapons.some((w) => w !== 'net');
-  warn.textContent = 'Tu as une arme, mais aucune règle ne la prend : ton cogneur se battra à mains nues.';
+  warn.hidden = draws || !p.weapons.some((w) => w !== 'net');
+  warn.textContent = 'Ce préréglage emporte une arme, mais aucune règle ne la prend : ton cogneur se battra à mains nues.';
 }
 
 function renderOpponents() {
+  const f = view.fighter;
   const box = $('#opponents');
   box.replaceChildren();
   const left = view.fights_left;
   $('#fights-left').textContent = left == null ? '' : `Combats restants aujourd'hui : ${left}`;
+  const sel = $('#attack-preset');
+  sel.replaceChildren(...f.presets.map((q, i) => el('option', { value: i, selected: i === f.attack }, q.name)));
+  sel.onchange = () => { f.attack = +sel.value; presetsChanged(); };
+  $('#defense-note').textContent = `Quand on t'attaque, tu te défends avec « ${f.presets[f.defense].name} ».`;
   view.opponents.forEach(({ fighter: o, bot }, i) => {
-    const pred = preds[i];
-    const predEl = el('span', { class: 'pred' + (pred == null ? '' : pred >= 0.6 ? ' good' : pred <= 0.4 ? ' bad' : ' mid') },
-      pred == null ? '' : `${Math.round(pred * 100)} % de victoires`);
     box.append(el('div', { class: 'opp' },
       el('div', { class: 'row between' },
         el('h3', {}, o.name, backend.online ? el('span', { class: 'tag', style: 'margin-left:6px' }, bot ? 'bot' : 'joueur') : null),
         el('span', { class: 'muted' }, `Niv. ${o.level} · ${maxHp(o)} PV`)),
       el('div', { class: 'mini' }, ...STAT_KEYS.map((k) => el('span', { title: STATS[k][0] }, `${STATS[k][0].slice(0, 3)} `, el('b', {}, o.stats[k])))),
-      el('div', { class: 'muted', style: 'font-size:12px' }, `Posture ${STANCES[o.stance][0].toLowerCase()}`),
+      el('div', { class: 'muted', style: 'font-size:12px' }, `Inventaire (il en emporte au plus ${CARRY} + ${CARRY}) :`),
       chipList(o),
       el('div', { class: 'actions' },
-        el('button', { onclick: () => startFight(i), disabled: left === 0 }, 'Combattre'),
-        el('button', { class: 'ghost small', onclick: () => {
-          preds[i] = api('predict', { a: view.fighter, b: o, n: 40, seed: seed() });
-          renderOpponents();
-        } }, 'Pronostic'),
-        predEl)));
+        el('button', { onclick: () => startFight(i), disabled: left === 0 }, 'Combattre'))));
   });
 }
 
@@ -565,15 +637,13 @@ function openBuild() {
 let anim = null;
 
 async function startFight(i) {
-  clearTimeout(planTimer);
   const f = view.fighter;
   if (info(f).issue) { openBuild(); return; }
-  await guarded(() => backend.savePlan(f.plan, f.stance));
-  const r = await guarded(() => backend.fight(i));
+  if (!(await flushPresets())) return;
+  const r = await guarded(() => backend.fight(i, f.attack));
   if (!r) return;
-  const me = view.fighter;
   view = r.me;
-  playFight(me, r.foe, r.result);
+  playFight(f, r.kit, r.foe, r.foe_kit, r.result);
 }
 
 function logLine(ev, names) {
@@ -602,14 +672,15 @@ function logLine(ev, names) {
 const TURN_KINDS = new Set(['attack', 'power', 'throw', 'equip', 'net', 'disarm', 'guard', 'potion', 'stance', 'skip']);
 const STRIKES = new Set(['attack', 'power', 'throw', 'counter']);
 
-function playFight(meF, foeF, res) {
+function playFight(meF, kit, foeF, foeKit, res) {
   const names = [meF.name, foeF.name];
-  const plans = [meF.plan, foeF.plan];
+  const plans = [kit.plan, foeKit.plan];
+  const kits = [kit, foeKit];
   const canvas = $('#stage');
   const ctx = canvas.getContext('2d');
   const sides = [meF, foeF].map((f, i) => ({
     name: f.name, max: res.max_hp[i], hp: res.max_hp[i], shown: res.max_hp[i], dodge: 0, crit: 0,
-    wield: null, guard: false, stunned: false, stance: f.stance,
+    wield: null, guard: false, stunned: false, stance: kits[i].stance,
     home: i === 0 ? 220 : 500, dir: i === 0 ? 1 : -1, color: i === 0 ? '#e8893a' : '#6ea8e0', flash: 0,
   }));
   const floats = [];
@@ -674,8 +745,10 @@ function playFight(meF, foeF, res) {
     r.replaceChildren(
       el('div', { class: 'big' }, won ? 'Victoire !' : 'Défaite…'),
       el('div', { class: 'muted' }, won ? '+2 XP' : '+1 XP'),
-      el('h3', { style: 'margin-top:8px' }, `Plan de ${foeF.name} (révélé)`),
-      el('ol', {}, foeF.plan.map((rule) => el('li', {}, ruleText(rule)))));
+      el('h3', { style: 'margin-top:8px' }, `${foeF.name} révèle son préréglage « ${foeKit.name} »`),
+      chipList(foeKit),
+      el('div', { class: 'muted', style: 'font-size:12px' }, `Posture ${STANCES[foeKit.stance][0].toLowerCase()}`),
+      el('ol', {}, foeKit.plan.map((rule) => el('li', {}, ruleText(rule))), el('li', { class: 'muted' }, 'Sinon → Attaquer')));
     r.hidden = false;
     $('#fight-close').hidden = false;
   }
@@ -690,7 +763,6 @@ function playFight(meF, foeF, res) {
     cancelAnimationFrame(anim);
     anim = null;
     $('#fight').hidden = true;
-    preds = {};
     renderAll();
   };
 

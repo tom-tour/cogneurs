@@ -46,7 +46,8 @@
           <li>Ton cogneur suit un <b>plan</b> : des règles « si… alors… » lues de haut en bas à chaque tour.</li>
           <li><b>Aucun hasard</b> : chaque chance (esquive, critique…) remplit une jauge, l'effet tombe à 100.</li>
           <li>Tu répartis toi-même tes points et fais tous tes choix de niveau, <b>modifiables gratuitement</b> entre deux combats.</li>
-          <li>Tu vois l'équipement de l'adversaire, pas son plan : il est révélé après le combat.</li>
+          <li>Avant chaque combat, tu choisis un <b>préréglage</b> : 3 armes, 3 compétences et un plan. Un autre sert à te défendre.</li>
+          <li>Tu vois tout ce que possède l'adversaire, pas ce qu'il emporte ni son plan : ils sont révélés après le combat.</li>
         </ul>
       </details>
     </div>
@@ -67,7 +68,18 @@
     <div class="col" id="sheet"></div>
     <div class="col wide">
       <div class="card">
-        <h2>Plan de bataille</h2>
+        <h2>Préréglages</h2>
+        <p class="hint">Un préréglage, c'est ce que ton cogneur emporte (3 armes et 3 compétences au plus) et son plan de bataille. Tu choisis celui d'attaque avant chaque combat ; celui de défense sert quand on t'attaque.</p>
+        <div id="preset-tabs" class="tabs"></div>
+        <div class="preset-head">
+          <input id="preset-name" maxlength="20" aria-label="Nom du préréglage">
+          <label><input type="checkbox" id="preset-attack"> Pour attaquer</label>
+          <label><input type="checkbox" id="preset-defense"> En défense</label>
+          <button id="preset-delete" class="ghost small">Supprimer</button>
+        </div>
+        <h3>Emporté</h3>
+        <div id="carry"></div>
+        <h3>Plan de bataille</h3>
         <p class="hint">À chaque tour, ton cogneur lit les règles de haut en bas et joue la première qui s'applique et qui est possible. Si aucune ne s'applique, il attaque avec ce qu'il a en main : il ne dégaine jamais tout seul.</p>
         <p class="hint"><b>Aucun hasard.</b> Chaque chance remplit une jauge : 9 % de chances d'esquiver ajoutent 9 à la jauge d'esquive à chaque attaque reçue, et l'esquive tombe quand elle atteint 100 (le surplus est gardé). Pareil pour les critiques, le blocage, la riposte, l'étourdissement et le désarmement. Les règles « esquive prête » et « critique prêt » permettent d'en jouer.</p>
         <div class="row">
@@ -87,7 +99,12 @@
           <h2>Arène</h2>
           <button id="reroll" class="ghost small">Autres adversaires</button>
         </div>
-        <p class="hint">Tu vois l'équipement de l'adversaire, pas son plan. Le pronostic joue ton plan actuel contre 40 plans qu'il pourrait avoir.</p>
+        <p class="hint">Tu vois les caractéristiques de l'adversaire et tout ce qu'il possède, pas ce qu'il emporte ni son plan : ils sont révélés après le combat.</p>
+        <div class="row">
+          <label for="attack-preset">J'attaque avec</label>
+          <select id="attack-preset"></select>
+        </div>
+        <p id="defense-note" class="hint"></p>
         <p id="fights-left" class="hint"></p>
         <div id="opponents"></div>
       </div>

@@ -466,6 +466,12 @@ fn first_on_tie(s: &[Side; 2]) -> usize {
     }
 }
 
+/// `a` attacks with its preset `preset`; `b` defends with its defense preset.
+pub fn duel(a: &Fighter, preset: usize, b: &Fighter) -> FightResult {
+    fight(&a.loadout(preset), &b.loadout(b.defense))
+}
+
+/// A fight between two loadouts (see `Fighter::loadout`).
 pub fn fight(a: &Fighter, b: &Fighter) -> FightResult {
     let mut s = [Side::new(a), Side::new(b)];
     let max_hp = [s[0].max_hp, s[1].max_hp];

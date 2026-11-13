@@ -11,7 +11,8 @@ Engine and server are written in Rust; the engine also runs in the page as WebAs
 - **No randomness in fights.** Every chance is a gauge: a 9% dodge chance adds 9 to the dodge gauge each time the fighter is attacked, and the dodge happens when the gauge reaches 100 (the overflow is kept: 99 + 5 leaves 4). Same for critical hits, blocks, ripostes, stuns and disarms. Rules can react to the gauges ("enemy dodge ready", "my crit ready").
 - Stats come in opposed pairs (Strength / Toughness, Accuracy / Evasion, Critical / Composure, Control / Tenacity), plus Speed and Endurance: one attack point cancels exactly one defense point.
 - **No randomness in progression either.** You spend your own points. Odd levels give +2 points and a choice: one more plan rule (3 at level 1, 8 at most) or a new condition. Even levels give a node of the skill tree: eight branches in opposed pairs (Power / Rampart, Finesse / Composure, Control / Tenacity, Rage / Survival), each node unlocked by the one before it. Everything can be redone for free between fights.
-- You see the opponent's gear, not its plan. "Prediction" plays your plan against 40 plans the opponent could have; the real plan is revealed after the fight.
+- **Presets.** A preset is what the fighter carries (3 weapons and 3 skills at most, out of everything it owns) plus a battle plan and a starting stance. You pick the attack preset before each fight; the defense preset is used when someone attacks you. "Take my best weapon" only looks at carried weapons.
+- You see the opponent's stats and everything it owns, not what it carries nor its plan: both are revealed after the fight.
 - Online, opponents are other players' fighters (bots fill in). The server runs every fight, so results cannot be forged.
 
 ## Layout
@@ -62,7 +63,8 @@ Moteur et serveur en Rust ; le moteur tourne aussi dans la page en WebAssembly.
 - **Aucun hasard en combat.** Chaque chance est une jauge : 9 % d'esquive ajoutent 9 à la jauge d'esquive à chaque attaque reçue, et l'esquive tombe quand elle atteint 100 (le surplus est gardé : 99 + 5 donne 4). Pareil pour les critiques, blocages, ripostes, étourdissements et désarmements. Des règles peuvent réagir aux jauges (« sa prochaine esquive est prête », « mon critique est prêt »).
 - Les caractéristiques vont par paires opposées (Force / Robustesse, Précision / Esquive, Critique / Sang-froid, Contrôle / Ténacité), plus Vitesse et Endurance : un point d'attaque annule exactement un point de défense.
 - **Aucun hasard dans la progression non plus.** Tu répartis tes points toi-même. Niveaux impairs : +2 points et un choix entre une règle de plus dans le plan (3 au niveau 1, 8 au maximum) ou une nouvelle condition. Niveaux pairs : une case de l'arbre de compétences, huit branches en paires opposées (Puissance / Rempart, Finesse / Sang-froid, Contrôle / Ténacité, Rage / Survie), chaque case débloquée par celle d'avant. Tout se refait gratuitement entre deux combats.
-- Tu vois l'équipement de l'adversaire, pas son plan. Le « Pronostic » joue ton plan contre 40 plans qu'il pourrait avoir ; le vrai plan est révélé après le combat.
+- **Préréglages.** Un préréglage, c'est ce que le cogneur emporte (3 armes et 3 compétences au plus, parmi tout ce qu'il possède), plus un plan de bataille et une posture de départ. Tu choisis le préréglage d'attaque avant chaque combat ; celui de défense sert quand on t'attaque. « Prendre ma meilleure arme » ne regarde que les armes emportées.
+- Tu vois les caractéristiques de l'adversaire et tout ce qu'il possède, pas ce qu'il emporte ni son plan : les deux sont révélés après le combat.
 - En ligne, les adversaires sont les cogneurs des autres joueurs (complétés par des bots). Le serveur calcule chaque combat : impossible de tricher sur le résultat.
 
 **Jouer :** https://tom-tour.github.io/cogneurs/ (en ligne quand le serveur maison tourne, solo hors ligne sinon)
