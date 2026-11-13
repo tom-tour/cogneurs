@@ -2,7 +2,7 @@
 
 [![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/tom_t)
 
-**Play:** https://tom-tour.github.io/cogneurs/ (offline solo mode until a server is hosted)
+**Play:** https://tom-tour.github.io/cogneurs/ (online when the home server is running, offline solo otherwise)
 
 Browser arena game where you don't fight: you write your fighter's **battle plan**, then watch it play out against other players' fighters.
 Engine and server are written in Rust; the engine also runs in the page as WebAssembly.
@@ -34,6 +34,10 @@ Then open http://localhost:8137. Tests: `cargo test`.
 
 Server settings (environment variables): `PORT` (8137), `COGNEURS_DATA` (`data/cogneurs.json`), `COGNEURS_WEB` (`web`), `COGNEURS_DAILY_FIGHTS` (20, 0 = unlimited).
 
+## Host from home
+
+Double-click `Lancer-serveur.bat` (Windows). It installs cloudflared if needed, builds the game, starts the server and opens a free Cloudflare tunnel. The tunnel's `https://` address is published in a [gist](https://gist.github.com/tom-tour/a06e4d37f026c071419b6dcbec01d11a); the page on GitHub Pages reads it and plays online. Close the window and the page shows the server as offline (solo mode). Player data stays on your PC in `data/`.
+
 ## Play with a friend
 
 The server also serves the page, so your friend only needs its address:
@@ -59,7 +63,7 @@ Moteur et serveur en Rust ; le moteur tourne aussi dans la page en WebAssembly.
 - Tu vois l'équipement de l'adversaire, pas son plan. Le « Pronostic » joue ton plan contre 40 plans qu'il pourrait avoir ; le vrai plan est révélé après le combat.
 - En ligne, les adversaires sont les cogneurs des autres joueurs (complétés par des bots). Le serveur calcule chaque combat : impossible de tricher sur le résultat.
 
-**Jouer :** https://tom-tour.github.io/cogneurs/ (solo hors ligne tant qu'aucun serveur n'est hébergé)
+**Jouer :** https://tom-tour.github.io/cogneurs/ (en ligne quand le serveur maison tourne, solo hors ligne sinon)
 
 Si le jeu te plaît, tu peux [me soutenir sur Ko-fi](https://ko-fi.com/tom_t).
 
@@ -71,6 +75,10 @@ cargo run --release -p cogneurs-server
 ```
 
 Puis ouvrir http://localhost:8137. Tests : `cargo test`.
+
+## Héberger depuis chez soi
+
+Double-clique sur `Lancer-serveur.bat` (Windows). Il installe cloudflared si besoin, compile le jeu, lance le serveur et ouvre un tunnel Cloudflare gratuit. L'adresse `https://` du tunnel est publiée dans un [gist](https://gist.github.com/tom-tour/a06e4d37f026c071419b6dcbec01d11a) ; la page GitHub Pages la lit et passe en ligne. Ferme la fenêtre et la page affiche le serveur hors ligne (mode solo). Les données des joueurs restent sur ton PC, dans `data/`.
 
 ## Jouer avec un ami
 

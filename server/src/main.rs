@@ -29,6 +29,8 @@ use cogneurs_engine::data::{Fighter, Rule, Stance};
 use cogneurs_engine::progress;
 use cogneurs_engine::rng::Rng;
 
+mod tunnel;
+
 // ---------- Storage ----------
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -446,12 +448,52 @@ async fn main() {
         .layer(CorsLayer::permissive());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    println!("Cogneurs on http://localhost:{port}");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("port in use");
+    println!("Cogneurs on http://localhost:{port}");
+
+    // --tunnel [--gist ID]: home hosting through a Cloudflare quick tunnel.
+    let args: Vec<String> = std::env::args().collect();
+    let gist = args.iter().position(|a| a == "--gist").and_then(|i| args.get(i + 1)).cloned();
+    let mut tunnel = None;
+    if args.iter().any(|a| a == "--tunnel") {
+        println!("Ouverture du tunnel...");
+        match tunnel::start(port, gist).await {
+            Ok(t) => {
+                println!();
+                println!("  EN LIGNE : {}", t.url);
+                println!("  La page https://tom-tour.github.io/cogneurs/ se connecte toute seule.");
+                println!("  Ferme cette fenêtre (ou Ctrl+C) pour mettre le serveur hors ligne.");
+                println!();
+                tunnel = Some(t);
+            }
+            Err(e) => eprintln!("Tunnel impossible : {e}\nLe serveur reste accessible en local seulement."),
+        }
+    }
+
     axum::serve(listener, router)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            println!("Arrêt...");
+            if let Some(t) = tunnel {
+                t.stop().await;
+            }
         })
         .await
         .unwrap();
+}
+
+/// Ctrl+C, or closing the console window on Windows.
+async fn shutdown_signal() {
+    #[cfg(windows)]
+    {
+        let mut close = tokio::signal::windows::ctrl_close().expect("console signal");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = close.recv() => {}
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }

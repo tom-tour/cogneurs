@@ -146,11 +146,26 @@ const Remote = {
     }
     return data;
   },
-  async available() {
+  async check(base) {
     try {
-      const r = await fetch(`${this.base}/api/health`, { signal: AbortSignal.timeout(4000) });
+      const r = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(6000) });
       return r.ok && (await r.json()).ok === true;
     } catch { return false; }
+  },
+  /** Finds a reachable server: the fixed address, then the published one. */
+  async locate() {
+    const onPages = location.hostname.endsWith('github.io');
+    const fixed = window.COGNEURS_API || '';
+    if ((fixed || !onPages) && await this.check(fixed)) { this.base = fixed; return true; }
+    const discovery = window.COGNEURS_DISCOVERY;
+    if (!discovery) return false;
+    try {
+      const r = await fetch(discovery, { cache: 'no-store' });
+      const data = await r.json();
+      const info = data.files ? JSON.parse(Object.values(data.files)[0].content) : data;
+      if (info.url && await this.check(info.url)) { this.base = info.url.replace(/\/$/, ''); return true; }
+    } catch { /* treated as offline */ }
+    return false;
   },
   async me() {
     if (!this.token) return null;
@@ -550,8 +565,17 @@ function playFight(meF, foeF, res) {
 // ---------- Boot ----------
 async function boot() {
   await loadEngine();
-  backend = (await Remote.available()) ? Remote : Local;
-  $('#mode').textContent = backend.online ? 'en ligne' : 'hors ligne (solo)';
+  $('#mode').textContent = 'connexion au serveur…';
+  backend = (await Remote.locate()) ? Remote : Local;
+  $('#mode').textContent = backend.online ? '● serveur en ligne' : '● serveur hors ligne · solo';
+  $('#mode').className = `tag status ${backend.online ? 'on' : 'off'}`;
+  if (!backend.online && window.COGNEURS_DISCOVERY) {
+    const note = el('div', { class: 'offline-note' },
+      'Le serveur de l\'arène est hors ligne : tu joues en solo, avec un cogneur séparé. ',
+      Remote.token ? 'Ton cogneur en ligne t\'attend, il reviendra avec le serveur. ' : '',
+      el('button', { class: 'ghost small', onclick: () => location.reload() }, 'Réessayer'));
+    document.querySelector('main').prepend(note);
+  }
   $('#create-form').onsubmit = async (e) => {
     e.preventDefault();
     const name = $('#name').value.trim();
