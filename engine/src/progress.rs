@@ -1,102 +1,90 @@
-//! Character creation, level-ups and opponent generation.
+//! Character creation, builds, levels and opponent generation.
+//!
+//! Progression has no randomness: the player spends every stat point and
+//! makes every level choice, and may redo them for free between fights.
+//! Only bots and the offered opponents are generated at random.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::data::*;
 use crate::rng::{hash_str, Rng};
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(tag = "k", rename_all = "snake_case")]
-pub enum Upgrade {
-    Stat { stat: Stat, amount: i32 },
-    Weapon { weapon: WeaponKind },
-    Skill { skill: Skill },
-}
-
 pub fn default_plan() -> Vec<Rule> {
-    vec![
-        Rule { cond: Cond::SelfUnarmed, action: Action::EquipBest },
-        Rule { cond: Cond::Always, action: Action::Attack },
-    ]
+    vec![Rule { cond: Cond::SelfUnarmed, action: Action::EquipBest }]
 }
 
-pub fn new_fighter(name: &str, seed: u64) -> Fighter {
-    let mut rng = Rng::new(seed ^ hash_str(name));
-    let mut f = Fighter {
+/// A fresh level 1 fighter, with its starting points still to spend.
+pub fn new_fighter(name: &str) -> Fighter {
+    Fighter {
         name: name.to_string(),
         level: 1,
         xp: 0,
-        pending: 1,
-        str: 3,
-        agi: 3,
-        spd: 3,
-        end: 3,
+        stats: Stats::default(),
+        picks: Vec::new(),
         weapons: Vec::new(),
         skills: Vec::new(),
         plan: default_plan(),
         stance: Stance::Balanced,
         wins: 0,
         losses: 0,
-    };
-    for _ in 0..4 {
-        *f.stat_mut(*rng.pick(&ALL_STATS)) += 1;
     }
-    f
 }
 
-fn random_upgrade(f: &Fighter, rng: &mut Rng) -> Upgrade {
-    let r = rng.f32();
-    if r < 0.30 {
-        let free: Vec<_> = ALL_WEAPONS.iter().filter(|w| !f.weapons.contains(w)).collect();
-        if !free.is_empty() {
-            return Upgrade::Weapon { weapon: **rng.pick(&free) };
-        }
-    } else if r < 0.60 {
-        let free: Vec<_> = ALL_SKILLS.iter().filter(|s| !f.has(**s)).collect();
-        if !free.is_empty() {
-            return Upgrade::Skill { skill: **rng.pick(&free) };
-        }
-    }
-    let amount = if rng.chance(0.3) { 3 } else { 2 };
-    Upgrade::Stat { stat: *rng.pick(&ALL_STATS), amount }
+/// Everything the page needs to edit a build.
+#[derive(Serialize)]
+pub struct BuildInfo {
+    pub budget: i32,
+    pub spent: i32,
+    pub cap: i32,
+    pub slots: usize,
+    pub xp_needed: u32,
+    pub max_hp: i32,
+    pub issue: Option<String>,
+    /// Choices offered on odd levels (rule slot or condition).
+    pub odd: Vec<Pick>,
+    /// Choices offered on even levels (weapon or skill).
+    pub even: Vec<Pick>,
 }
 
-/// Three distinct upgrades to choose from. Deterministic for a given
-/// fighter state, so reloading the page never rerolls them.
-pub fn level_up_options(f: &Fighter) -> Vec<Upgrade> {
-    let seed = hash_str(&f.name) ^ ((f.level as u64) << 32) ^ (f.pending as u64) ^ ((f.wins + f.losses) as u64) << 16;
-    let mut rng = Rng::new(seed);
-    let mut out: Vec<Upgrade> = Vec::new();
-    let mut guard = 0;
-    while out.len() < 3 && guard < 100 {
-        guard += 1;
-        let u = random_upgrade(f, &mut rng);
-        let dup = out.iter().any(|o| match (o, &u) {
-            (Upgrade::Stat { stat: a, .. }, Upgrade::Stat { stat: b, .. }) => a == b,
-            _ => *o == u,
-        });
-        if !dup {
-            out.push(u);
-        }
-    }
-    out
+pub fn odd_choices() -> Vec<Pick> {
+    std::iter::once(Pick::Slot).chain(UNLOCKABLE_CONDS.iter().map(|c| Pick::Cond { cond: *c })).collect()
 }
 
-pub fn apply(f: &mut Fighter, u: Upgrade) {
-    match u {
-        Upgrade::Stat { stat, amount } => *f.stat_mut(stat) += amount,
-        Upgrade::Weapon { weapon } => {
-            if !f.weapons.contains(&weapon) {
-                f.weapons.push(weapon)
-            }
-        }
-        Upgrade::Skill { skill } => {
-            if !f.has(skill) {
-                f.skills.push(skill)
-            }
-        }
+pub fn even_choices() -> Vec<Pick> {
+    ALL_WEAPONS
+        .iter()
+        .map(|w| Pick::Weapon { weapon: *w })
+        .chain(ALL_SKILLS.iter().map(|s| Pick::Skill { skill: *s }))
+        .collect()
+}
+
+pub fn build_info(f: &Fighter) -> BuildInfo {
+    BuildInfo {
+        budget: stat_budget(f.level),
+        spent: f.stats.sum(),
+        cap: stat_cap(f.level),
+        slots: f.slots(),
+        xp_needed: xp_needed(f.level),
+        max_hp: f.max_hp(),
+        issue: f.build_issue(),
+        odd: odd_choices(),
+        even: even_choices(),
     }
-    f.pending = f.pending.saturating_sub(1);
+}
+
+/// Replaces the stats and level choices (creation, level-up or respec).
+/// Partial builds are accepted, as long as nothing is over the limits.
+pub fn set_build(f: &mut Fighter, stats: Stats, picks: Vec<Pick>) -> Result<(), String> {
+    let mut g = f.clone();
+    g.stats = stats;
+    g.picks = picks;
+    g.rebuild();
+    // Limit errors come first; "Il reste..." only means unfinished.
+    if let Some(issue) = g.build_issue().filter(|i| !i.starts_with("Il reste")) {
+        return Err(issue);
+    }
+    *f = g;
+    Ok(())
 }
 
 pub fn record(f: &mut Fighter, won: bool) {
@@ -110,7 +98,6 @@ pub fn record(f: &mut Fighter, won: bool) {
     while f.xp >= xp_needed(f.level) {
         f.xp -= xp_needed(f.level);
         f.level += 1;
-        f.pending += 1;
     }
 }
 
@@ -131,6 +118,9 @@ fn gen_name(rng: &mut Rng) -> String {
 /// A reasonable plan for a computer-controlled fighter.
 pub fn ai_plan(f: &Fighter, rng: &mut Rng) -> Vec<Rule> {
     let mut plan = Vec::new();
+    if f.weapons.iter().any(|w| w.wieldable()) {
+        plan.push(Rule { cond: Cond::SelfUnarmed, action: Action::EquipBest });
+    }
     if f.has(Skill::Potion) {
         plan.push(Rule { cond: Cond::SelfHpBelow(*rng.pick(&[25u8, 40, 50])), action: Action::Potion });
     }
@@ -141,35 +131,57 @@ pub fn ai_plan(f: &Fighter, rng: &mut Rng) -> Vec<Rule> {
         plan.push(Rule { cond: Cond::EnemyArmed, action: Action::Disarm });
     }
     if f.has(Skill::PowerStrike) {
-        let cond = *rng.pick(&[Cond::Always, Cond::EnemyStunned, Cond::EnemyHpBelow(50)]);
-        plan.push(Rule { cond, action: Action::PowerStrike });
+        let mut conds = vec![Cond::Always, Cond::EnemyHpBelow(50)];
+        if f.knows(Cond::EnemyStunned) {
+            conds.push(Cond::EnemyStunned);
+        }
+        plan.push(Rule { cond: *rng.pick(&conds), action: Action::PowerStrike });
     }
     if f.has(Skill::Shield) && rng.chance(0.5) {
-        plan.push(Rule { cond: Cond::SelfHpBelow(50), action: Action::Guard });
+        let cond = if f.knows(Cond::EnemyCritReady) { Cond::EnemyCritReady } else { Cond::SelfHpBelow(50) };
+        plan.push(Rule { cond, action: Action::Guard });
     }
-    if f.weapons.iter().any(|w| w.wieldable()) {
-        plan.insert(0, Rule { cond: Cond::SelfUnarmed, action: Action::EquipBest });
-        if rng.chance(0.3) {
-            plan.push(Rule { cond: Cond::EnemyHpBelow(25), action: Action::Throw });
+    if f.weapons.iter().any(|w| w.wieldable()) && rng.chance(0.3) {
+        plan.push(Rule { cond: Cond::EnemyHpBelow(25), action: Action::Throw });
+    }
+    plan.truncate(f.slots());
+    plan
+}
+
+/// Random valid build for a bot of the given level.
+fn random_build(f: &mut Fighter, rng: &mut Rng) {
+    let cap = stat_cap(f.level);
+    let mut left = stat_budget(f.level);
+    while left > 0 {
+        let v = f.stats.values_mut();
+        let i = rng.below(10);
+        if *v[i] < cap {
+            *v[i] += 1;
+            left -= 1;
         }
     }
-    plan.truncate(plan_slots(f.level) - 1);
-    plan.push(Rule { cond: Cond::Always, action: Action::Attack });
-    plan
+    f.picks.clear();
+    for level in 2..=f.level {
+        let pool: Vec<Pick> = if level % 2 == 1 { odd_choices() } else { even_choices() }
+            .into_iter()
+            .filter(|p| *p == Pick::Slot || !f.picks.contains(p))
+            .filter(|p| *p != Pick::Slot || f.slots() < MAX_RULES)
+            .collect();
+        if pool.is_empty() {
+            break;
+        }
+        let p = *rng.pick(&pool);
+        f.picks.push(p);
+        f.rebuild();
+    }
 }
 
 pub fn gen_opponent(level: u32, seed: u64) -> Fighter {
     let mut rng = Rng::new(seed);
     let name = gen_name(&mut rng);
-    let mut f = new_fighter(&name, rng.next_u64());
-    f.pending = 0;
-    f.plan.clear();
-    for _ in 0..level {
-        let u = random_upgrade(&f, &mut rng);
-        f.pending = 1;
-        apply(&mut f, u);
-    }
-    f.level = level;
+    let mut f = new_fighter(&name);
+    f.level = level.max(1);
+    random_build(&mut f, &mut rng);
     f.stance = *rng.pick(&[Stance::Aggressive, Stance::Balanced, Stance::Balanced, Stance::Defensive]);
     f.plan = ai_plan(&f, &mut rng);
     f
@@ -179,7 +191,7 @@ pub fn gen_opponent(level: u32, seed: u64) -> Fighter {
 /// fight: the enemy plan is hidden. It plays `a` against `n` plausible plans
 /// for `b` (built from b's visible gear) and returns the share of wins.
 pub fn predict(a: &Fighter, b: &Fighter, n: u32, seed: u64) -> f32 {
-    let mut rng = Rng::new(seed);
+    let mut rng = Rng::new(seed ^ hash_str(&b.name));
     let mut guess = b.clone();
     let wins = (0..n)
         .filter(|_| {

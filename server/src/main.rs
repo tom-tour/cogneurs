@@ -25,7 +25,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 use cogneurs_engine::combat::{fight, FightResult};
-use cogneurs_engine::data::{Fighter, Rule, Stance};
+use cogneurs_engine::data::{Fighter, Pick, Rule, Stance, Stats};
 use cogneurs_engine::progress;
 use cogneurs_engine::rng::Rng;
 
@@ -159,7 +159,6 @@ struct HistoryView {
 #[derive(Serialize)]
 struct MeView {
     fighter: Fighter,
-    options: Vec<progress::Upgrade>,
     opponents: Vec<OpponentView>,
     history: Vec<HistoryView>,
     fights_left: Option<u32>,
@@ -200,7 +199,6 @@ fn me_view(app: &App, db: &Db, p: &Player) -> MeView {
     });
     MeView {
         fighter: p.fighter.clone(),
-        options: if p.fighter.pending > 0 { progress::level_up_options(&p.fighter) } else { Vec::new() },
         opponents,
         history,
         fights_left,
@@ -267,7 +265,7 @@ async fn register(State(app): State<Arc<App>>, Json(req): Json<RegisterReq>) -> 
     if find_by_name(&db, &name).is_some() {
         return Err(ApiError(StatusCode::CONFLICT, "Ce nom est déjà pris.".into()));
     }
-    let fighter = progress::new_fighter(&name, seed);
+    let fighter = progress::new_fighter(&name);
     let offers = make_offers(&db, &fighter, seed ^ 1);
     let token = new_token();
     db.players.insert(token.clone(), Player { fighter, offers, day: 0, fights_today: 0 });
@@ -305,20 +303,17 @@ async fn put_plan(State(app): State<Arc<App>>, headers: HeaderMap, Json(mut req)
 }
 
 #[derive(Deserialize)]
-struct ChoiceReq {
-    choice: usize,
+struct BuildReq {
+    stats: Stats,
+    picks: Vec<Pick>,
 }
 
-async fn level_up(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): Json<ChoiceReq>) -> ApiResult<MeView> {
+/// Creation, level-ups and free respec: the whole build is sent at once.
+async fn put_build(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): Json<BuildReq>) -> ApiResult<MeView> {
     let t = token(&headers)?;
     let mut db = app.db.lock().await;
     let p = db.players.get_mut(&t).ok_or_else(unknown)?;
-    if p.fighter.pending == 0 {
-        return Err(bad("Aucune amélioration en attente."));
-    }
-    let opts = progress::level_up_options(&p.fighter);
-    let u = *opts.get(req.choice).ok_or_else(|| bad("Choix invalide."))?;
-    progress::apply(&mut p.fighter, u);
+    progress::set_build(&mut p.fighter, req.stats, req.picks).map_err(|e| bad(&e))?;
     app.persist(&db).await;
     Ok(Json(me_view(&app, &db, &db.players[&t])))
 }
@@ -352,8 +347,8 @@ async fn post_fight(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): 
     let seed = app.seed().await;
     let mut db = app.db.lock().await;
     let p = db.players.get(&t).ok_or_else(unknown)?;
-    if p.fighter.pending > 0 {
-        return Err(bad("Choisis d'abord ton amélioration."));
+    if let Some(issue) = p.fighter.build_issue() {
+        return Err(bad(&format!("Termine d'abord tes améliorations : {issue}")));
     }
     let today = now() / 86400;
     let used = if p.day == today { p.fights_today } else { 0 };
@@ -437,7 +432,7 @@ async fn main() {
         .route("/register", post(register))
         .route("/me", get(get_me))
         .route("/me/plan", put(put_plan))
-        .route("/me/level", post(level_up))
+        .route("/me/build", put(put_build))
         .route("/me/reroll", post(reroll))
         .route("/fight", post(post_fight))
         .route("/leaderboard", get(leaderboard))

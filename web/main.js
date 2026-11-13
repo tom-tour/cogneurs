@@ -16,20 +16,29 @@ const SKILLS = {
   disarm: ['Désarmement', "Fait tomber l'arme adverse (perdue pour le combat). Recharge 3 tours."],
   counter: ['Riposte', 'Jauge de riposte : +40 par esquive, +60 par coup paré en garde.'],
   fury: ['Furie', '+40 % de dégâts sous 30 % de PV.'],
-  toughness: ['Cuir épais', '-2 dégâts sur chaque coup reçu.'],
-  evasion: ['Esquive', '+10 % d\'esquive.'],
 };
+// Opposed pairs: one attack point cancels exactly one defense point.
 const STATS = {
-  str: ['Force', 'Dégâts : +8 % par point.'],
-  agi: ['Agilité', 'Précision, esquive, critiques, désarmement.'],
+  str: ['Force', "Dégâts infligés : +8 % par point d'écart avec sa Robustesse."],
+  tou: ['Robustesse', 'Dégâts reçus : annule la Force adverse point pour point.'],
+  acc: ['Précision', "Chance de toucher : +2 % par point d'écart avec son Esquive."],
+  eva: ['Esquive', "Chance d'esquiver : annule la Précision adverse point pour point."],
+  crit: ['Critique', "Chance de critique : +2 % par point d'écart avec son Sang-froid."],
+  cool: ['Sang-froid', 'Critiques reçus : annule le Critique adverse point pour point.'],
+  ctl: ['Contrôle', 'Sonner à la massue, désarmer, prendre au filet.'],
+  ten: ['Ténacité', 'Résiste au Contrôle adverse point pour point.'],
   spd: ['Vitesse', 'Fréquence des tours.'],
-  end: ['Endurance', '+8 PV par point.'],
+  end: ['Endurance', '+6 PV par point.'],
 };
+const STAT_KEYS = Object.keys(STATS);
+const STAT_PAIRS = [['str', 'tou', '↔'], ['acc', 'eva', '↔'], ['crit', 'cool', '↔'], ['ctl', 'ten', '↔'], ['spd', 'end', '·']];
+const MAX_SLOT_PICKS = 5;
 const STANCES = {
   aggressive: ['Agressive', "+20 % de dégâts, -5 % d'esquive"],
   balanced: ['Équilibrée', 'Aucun bonus'],
   defensive: ['Défensive', "-15 % de dégâts, +8 % d'esquive"],
 };
+// [key, label, takes a threshold, must be unlocked, description]
 const CONDS = [
   ['always', 'Toujours'],
   ['first_turn', 'Au premier tour'],
@@ -39,10 +48,12 @@ const CONDS = [
   ['self_armed', "Si j'ai une arme en main"],
   ['enemy_armed', 'Si il est armé'],
   ['enemy_unarmed', 'Si il est à mains nues'],
-  ['enemy_stunned', 'Si il est immobilisé'],
-  ['enemy_guarding', 'Si il se protège'],
-  ['enemy_dodge_ready', 'Si sa prochaine esquive est prête'],
-  ['crit_ready', 'Si mon critique est prêt'],
+  ['enemy_stunned', 'Si il est immobilisé', false, true, 'Sonné à la massue ou pris au filet : il va passer son tour.'],
+  ['enemy_guarding', 'Si il se protège', false, true, 'Il a choisi « Se protéger » à son dernier tour.'],
+  ['enemy_dodge_ready', 'Si sa prochaine esquive est prête', false, true, "Ta prochaine attaque normale remplira sa jauge d'esquive."],
+  ['crit_ready', 'Si mon critique est prêt', false, true, 'Ton prochain coup qui touche sera un critique.'],
+  ['enemy_crit_ready', 'Si son critique est prêt', false, true, 'Son prochain coup qui touche sera un critique.'],
+  ['faster', 'Si je suis plus rapide que lui', false, true, "Ta jauge d'action se remplit plus vite que la sienne (vitesse et arme en main)."],
 ];
 const THRESHOLDS = [25, 40, 50, 75];
 
@@ -75,20 +86,25 @@ const store = {
 const stripPlan = (f) => ({ ...f, plan: [] });
 
 // ---------- Backends ----------
-// Both return the same "view": { fighter, options, opponents: [{fighter, bot}], history, fights_left }.
+// Both return the same "view": { fighter, opponents: [{fighter, bot}], history, fights_left }.
 
 /** Offline solo mode: everything runs in the page, saved in localStorage. */
 const Local = {
   key: 'cogneurs.local.v2',
   online: false,
   s: null,
-  load() { try { this.s = JSON.parse(store.get(this.key)); } catch { this.s = null; } },
+  load() {
+    try { this.s = JSON.parse(store.get(this.key)); } catch { this.s = null; }
+    if (!this.s || !this.s.fighter) return;
+    // Older saves are converted: points and choices are handed back.
+    this.s.fighter = api('load', { fighter: this.s.fighter });
+    if (this.s.opponents.some((o) => !o.stats)) this.reroll_();
+  },
   save() { store.set(this.key, JSON.stringify(this.s)); },
   view() {
     const f = this.s.fighter;
     return {
       fighter: f,
-      options: f.pending > 0 ? api('options', { fighter: f }) : [],
       opponents: this.s.opponents.map((o) => ({ fighter: stripPlan(o), bot: true })),
       history: this.s.history,
       fights_left: null,
@@ -97,7 +113,7 @@ const Local = {
   reroll_() { this.s.opponents = api('opponents', { fighter: this.s.fighter, seed: seed() }); },
   async me() { this.load(); return this.s ? this.view() : null; },
   async register(name) {
-    this.s = { fighter: api('new_fighter', { name, seed: seed() }), opponents: [], history: [] };
+    this.s = { fighter: api('new_fighter', { name }), opponents: [], history: [] };
     this.reroll_();
     this.save();
     return this.view();
@@ -107,15 +123,16 @@ const Local = {
     this.save();
     return this.view();
   },
-  async level(choice) {
-    const u = api('options', { fighter: this.s.fighter })[choice];
-    this.s.fighter = api('apply', { fighter: this.s.fighter, upgrade: u });
+  async setBuild(stats, picks) {
+    this.s.fighter = api('set_build', { fighter: this.s.fighter, stats, picks });
     this.save();
     return this.view();
   },
   async reroll() { this.reroll_(); this.save(); return this.view(); },
   async fight(index) {
     const me = this.s.fighter;
+    const issue = info(me).issue;
+    if (issue) throw new Error(`Termine d'abord tes améliorations : ${issue}`);
     const foe = this.s.opponents[index];
     const result = api('fight', { a: me, b: foe });
     const won = result.winner === 0;
@@ -201,7 +218,7 @@ const Remote = {
     return r.me;
   },
   savePlan(plan, stance) { return this.req('PUT', '/me/plan', { plan, stance }); },
-  level(choice) { return this.req('POST', '/me/level', { choice }); },
+  setBuild(stats, picks) { return this.req('PUT', '/me/build', { stats, picks }); },
   reroll() { return this.req('POST', '/me/reroll'); },
   fight(index) { return this.req('POST', '/fight', { index }); },
   leaderboard() { return this.req('GET', '/leaderboard'); },
@@ -224,7 +241,11 @@ const el = (tag, attrs = {}, ...kids) => {
   for (const k of kids.flat()) if (k != null) e.append(k.nodeType ? k : document.createTextNode(k));
   return e;
 };
-const maxHp = (f) => 30 + f.end * 8;
+const maxHp = (f) => 50 + f.stats.end * 6;
+const info = (f) => api('info', { fighter: f });
+const condDef = (k) => CONDS.find((c) => c[0] === k);
+/** Whether the fighter may use this condition (unlocked or always available). */
+const knows = (f, k) => { const c = condDef(k); return !c || !c[3] || f.picks.some((p) => p.k === 'cond' && p.cond.k === k); };
 
 function toast(msg) {
   let t = $('#toast');
@@ -238,17 +259,17 @@ async function guarded(fn) {
   try { return await fn(); } catch (e) { toast(e.message); return undefined; }
 }
 
-function upgradeText(u) {
-  if (u.k === 'stat') return [`+${u.amount} ${STATS[u.stat][0]}`, STATS[u.stat][1]];
-  if (u.k === 'weapon') return [`Arme : ${WEAPONS[u.weapon][0]}`, WEAPONS[u.weapon][1]];
-  return [`Compétence : ${SKILLS[u.skill][0]}`, SKILLS[u.skill][1]];
+function pickText(p) {
+  if (p.k === 'slot') return ['+1 place de règle', `Ton plan peut contenir une règle de plus (${3 + MAX_SLOT_PICKS} au maximum).`];
+  if (p.k === 'cond') { const c = condDef(p.cond.k); return [`Condition : ${c[1]}`, c[4]]; }
+  if (p.k === 'weapon') return [`Arme : ${WEAPONS[p.weapon][0]}`, WEAPONS[p.weapon][1]];
+  return [`Compétence : ${SKILLS[p.skill][0]}`, SKILLS[p.skill][1]];
 }
 
 function actionChoices(f) {
-  const out = [['attack', 'Attaquer'], ['guard', 'Se protéger']];
+  const out = [['attack', 'Attaquer'], ['guard', 'Se protéger'], ['equip_best', 'Prendre ma meilleure arme']];
   const held = f.weapons.filter((w) => w !== 'net');
   if (held.length) {
-    out.push(['equip_best', 'Prendre ma meilleure arme']);
     held.forEach((w) => out.push([`equip:${w}`, `Prendre : ${WEAPONS[w][0]}`]));
     out.push(['throw', 'Lancer mon arme (×1,4, perdue)']);
   }
@@ -281,7 +302,7 @@ function show(id) {
   $('#reset').hidden = id !== 'home';
   $('#to-menu').hidden = id === 'menu';
   $('#mode').hidden = id === 'menu' || !backend.online;
-  if (id === 'menu') { $('#levelup').hidden = true; renderMenu(); startMenuArt(); } else stopMenuArt();
+  if (id === 'menu') { $('#build').hidden = true; renderMenu(); startMenuArt(); } else stopMenuArt();
 }
 
 function setView(v) {
@@ -297,7 +318,7 @@ function renderAll() {
   renderPlan(f);
   renderOpponents();
   renderHistory();
-  if (view.options.length) openLevelUp();
+  if (info(f).issue && buildDismissed !== `${f.name}/${f.level}`) openBuild();
 }
 
 function chipList(f) {
@@ -307,22 +328,25 @@ function chipList(f) {
 }
 
 function renderSheet(f) {
-  const meta = api('meta', { level: f.level });
-  const top = Math.max(10, f.str, f.agi, f.spd, f.end);
-  const stats = el('div', { class: 'stats' });
-  for (const k of Object.keys(STATS)) {
-    stats.append(el('span', { title: STATS[k][1] }, STATS[k][0]),
-      el('div', { class: 'bar' }, el('i', { style: `width:${(f[k] / top) * 100}%` })), el('b', {}, f[k]));
+  const inf = info(f);
+  const pairs = el('div', { class: 'sheet-pairs' });
+  for (const [a, b, sep] of STAT_PAIRS) {
+    pairs.append(
+      el('span', { class: 'l', title: STATS[a][1] }, `${STATS[a][0]} `, el('b', {}, f.stats[a])),
+      el('span', { class: 'x' }, sep),
+      el('span', { title: STATS[b][1] }, el('b', {}, f.stats[b]), ` ${STATS[b][0]}`));
   }
   $('#sheet').replaceChildren(el('div', { class: 'card' },
     el('h2', {}, f.name),
-    el('div', { class: 'row between' }, el('span', {}, `Niveau ${f.level}`), el('span', { class: 'muted' }, `${maxHp(f)} PV`)),
-    el('div', { class: 'bar xp', title: `${f.xp} / ${meta.xp_needed} XP` }, el('i', { style: `width:${(f.xp / meta.xp_needed) * 100}%` })),
-    stats,
+    el('div', { class: 'row between' }, el('span', {}, `Niveau ${f.level}`), el('span', { class: 'muted' }, `${inf.max_hp} PV`)),
+    el('div', { class: 'bar xp', title: `${f.xp} / ${inf.xp_needed} XP` }, el('i', { style: `width:${(f.xp / inf.xp_needed) * 100}%` })),
+    pairs,
+    inf.issue ? el('p', { class: 'warn' }, inf.issue) : null,
+    el('button', { class: inf.issue ? '' : 'ghost small', onclick: openBuild }, inf.issue ? 'Faire mes améliorations' : 'Respécialiser'),
     el('h3', {}, 'Équipement'),
     chipList(f),
     el('p', { class: 'record' }, `${f.wins} victoire${f.wins > 1 ? 's' : ''} · ${f.losses} défaite${f.losses > 1 ? 's' : ''}`),
-    el('p', { class: 'hint' }, 'Victoire : +2 XP. Défaite : +1 XP. À chaque niveau tu choisis 1 amélioration parmi 3, et tous les 2 niveaux ton plan gagne une règle.')));
+    el('p', { class: 'hint' }, 'Victoire : +2 XP. Défaite : +1 XP. Niveaux impairs : +2 points et une place de règle ou une condition. Niveaux pairs : une arme ou une compétence.')));
 }
 
 let planTimer = null;
@@ -337,7 +361,7 @@ function planChanged() {
 }
 
 function renderPlan(f) {
-  const slots = api('meta', { level: f.level }).slots;
+  const slots = info(f).slots;
   const stanceSel = $('#stance');
   stanceSel.replaceChildren(...Object.entries(STANCES).map(([k, [n, d]]) => el('option', { value: k, selected: f.stance === k }, `${n} (${d})`)));
   stanceSel.onchange = () => { f.stance = stanceSel.value; planChanged(); };
@@ -346,8 +370,9 @@ function renderPlan(f) {
   const list = $('#plan');
   list.replaceChildren();
   f.plan.forEach((r, i) => {
-    const condSel = el('select', {}, CONDS.map(([k, n]) => el('option', { value: k, selected: r.cond.k === k }, n)));
-    const def = CONDS.find((c) => c[0] === r.cond.k);
+    const usable = CONDS.filter(([k]) => knows(f, k) || k === r.cond.k);
+    const condSel = el('select', {}, usable.map(([k, n]) => el('option', { value: k, selected: r.cond.k === k }, knows(f, k) ? n : `🔒 ${n}`)));
+    const def = condDef(r.cond.k);
     const thrSel = def && def[2]
       ? el('select', {}, THRESHOLDS.map((t) => el('option', { value: t, selected: r.cond.v === t }, `${t} %`)))
       : null;
@@ -365,7 +390,8 @@ function renderPlan(f) {
       [f.plan[i], f.plan[j]] = [f.plan[j], f.plan[i]];
       planChanged();
     };
-    list.append(el('li', { class: i >= slots ? 'off' : '' }, condSel, thrSel, el('span', { class: 'arrow' }, '→'), actSel,
+    const off = i >= slots || !knows(f, r.cond.k);
+    list.append(el('li', { class: off ? 'off' : '', title: knows(f, r.cond.k) ? null : 'Condition à débloquer : cette règle est ignorée.' }, condSel, thrSel, el('span', { class: 'arrow' }, '→'), actSel,
       el('span', { class: 'tools' },
         el('button', { class: 'ghost small', title: 'Monter', onclick: move(-1), disabled: i === 0 }, '▲'),
         el('button', { class: 'ghost small', title: 'Descendre', onclick: move(1), disabled: i === f.plan.length - 1 }, '▼'),
@@ -374,6 +400,12 @@ function renderPlan(f) {
   $('#add-rule').disabled = f.plan.length >= slots;
   $('#add-rule').onclick = () => { f.plan.push({ cond: { k: 'always' }, action: { k: 'attack' } }); planChanged(); };
   $('#slots').textContent = `${Math.min(f.plan.length, slots)} / ${slots} règles utilisées${f.plan.length > slots ? ' (les règles grisées sont ignorées)' : ''}.`;
+  // A weapon carried but never drawn is a common trap now that nothing is automatic.
+  const active = f.plan.slice(0, slots).filter((r) => knows(f, r.cond.k));
+  const draws = active.some((r) => r.action.k === 'equip_best' || r.action.k === 'equip');
+  const warn = $('#plan-warn');
+  warn.hidden = draws || !f.weapons.some((w) => w !== 'net');
+  warn.textContent = 'Tu as une arme, mais aucune règle ne la prend : ton cogneur se battra à mains nues.';
 }
 
 function renderOpponents() {
@@ -389,7 +421,7 @@ function renderOpponents() {
       el('div', { class: 'row between' },
         el('h3', {}, o.name, backend.online ? el('span', { class: 'tag', style: 'margin-left:6px' }, bot ? 'bot' : 'joueur') : null),
         el('span', { class: 'muted' }, `Niv. ${o.level} · ${maxHp(o)} PV`)),
-      el('div', { class: 'mini' }, ...Object.keys(STATS).map((k) => el('span', { title: STATS[k][0] }, `${STATS[k][0].slice(0, 3)} `, el('b', {}, o[k])))),
+      el('div', { class: 'mini' }, ...STAT_KEYS.map((k) => el('span', { title: STATS[k][0] }, `${STATS[k][0].slice(0, 3)} `, el('b', {}, o.stats[k])))),
       el('div', { class: 'muted', style: 'font-size:12px' }, `Posture ${STANCES[o.stance][0].toLowerCase()}`),
       chipList(o),
       el('div', { class: 'actions' },
@@ -415,16 +447,65 @@ async function renderHistory() {
   }
 }
 
-// ---------- Level up ----------
-function openLevelUp() {
-  $('#choices').replaceChildren(...view.options.map((u, i) => {
-    const [title, desc] = upgradeText(u);
-    return el('button', { class: 'choice', onclick: async () => {
-      $('#levelup').hidden = true;
-      setView(await guarded(() => backend.level(i)));
-    } }, el('b', {}, title), el('span', {}, desc));
-  }));
-  $('#levelup').hidden = false;
+// ---------- Build editor (creation, level-ups, respec) ----------
+let buildDismissed = null;
+
+function openBuild() {
+  const f = view.fighter;
+  const inf = info(f);
+  const draft = { stats: { ...f.stats }, picks: f.picks.map((p) => ({ ...p })) };
+  while (draft.picks.length < f.level - 1) draft.picks.push(null);
+  const key = (x) => (x ? JSON.stringify(x) : '');
+  // The engine takes the choices in level order, up to the first one missing.
+  const chosen = () => { const i = draft.picks.indexOf(null); return i < 0 ? draft.picks : draft.picks.slice(0, i); };
+  const fresh = f.level === 1 && !f.wins && !f.losses;
+  $('#build-title').textContent = fresh ? `Crée ${f.name} : répartis tes points` : inf.issue ? `Niveau ${f.level} : améliorations` : 'Respécialisation';
+  $('#build-levels-box').hidden = f.level < 2;
+
+  const render = () => {
+    const spent = STAT_KEYS.reduce((n, k) => n + draft.stats[k], 0);
+    const left = inf.budget - spent;
+    $('#build-points').textContent = `· ${left} point${left > 1 ? 's' : ''} à répartir (${inf.budget} au total, ${inf.cap} max par caractéristique)`;
+    $('#build-stats').replaceChildren(...STAT_KEYS.map((k) => {
+      const v = draft.stats[k];
+      const step = (d) => () => { draft.stats[k] = v + d; render(); };
+      return el('div', { class: 'build-stat' },
+        el('span', { class: 'name', title: STATS[k][1] }, STATS[k][0], el('small', {}, STATS[k][1])),
+        el('button', { class: 'ghost small', onclick: step(-1), disabled: v <= 0, 'aria-label': `Retirer un point de ${STATS[k][0]}` }, '−'),
+        el('b', {}, v),
+        el('button', { class: 'ghost small', onclick: step(1), disabled: left <= 0 || v >= inf.cap, 'aria-label': `Ajouter un point à ${STATS[k][0]}` }, '+'));
+    }));
+
+    const firstHole = draft.picks.indexOf(null);
+    $('#build-levels').replaceChildren(...draft.picks.map((p, i) => {
+      const level = i + 2;
+      const others = draft.picks.filter((x, j) => x && j !== i);
+      const taken = new Set(others.filter((x) => x.k !== 'slot').map(key));
+      const slotsTaken = others.filter((x) => x.k === 'slot').length;
+      const opts = (level % 2 ? inf.odd : inf.even).filter((x) => !taken.has(key(x)) && !(x.k === 'slot' && slotsTaken >= MAX_SLOT_PICKS));
+      const sel = el('select', { disabled: firstHole >= 0 && i > firstHole },
+        el('option', { value: '' }, '— à choisir —'),
+        opts.map((x) => el('option', { value: key(x), selected: key(x) === key(p) }, pickText(x)[0])));
+      sel.onchange = () => { draft.picks[i] = sel.value ? JSON.parse(sel.value) : null; render(); };
+      return el('li', {}, el('span', { class: 'lv' }, `Niveau ${level}`), sel, el('span', { class: 'desc' }, p ? pickText(p)[1] : ''));
+    }));
+
+    let issue;
+    try { issue = info(api('set_build', { fighter: f, stats: draft.stats, picks: chosen() })).issue; } catch (e) { issue = e.message; }
+    $('#build-issue').textContent = issue || '';
+    $('#build-save').textContent = issue ? 'Enregistrer (incomplet)' : 'Valider';
+  };
+
+  $('#build-save').onclick = async () => {
+    const v = await guarded(() => backend.setBuild(draft.stats, chosen()));
+    if (!v) return;
+    buildDismissed = `${f.name}/${f.level}`;
+    $('#build').hidden = true;
+    setView(v);
+  };
+  $('#build-cancel').onclick = () => { buildDismissed = `${f.name}/${f.level}`; $('#build').hidden = true; };
+  render();
+  $('#build').hidden = false;
 }
 
 // ---------- Fight replay ----------
@@ -433,6 +514,7 @@ let anim = null;
 async function startFight(i) {
   clearTimeout(planTimer);
   const f = view.fighter;
+  if (info(f).issue) { openBuild(); return; }
   await guarded(() => backend.savePlan(f.plan, f.stance));
   const r = await guarded(() => backend.fight(i));
   if (!r) return;

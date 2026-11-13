@@ -7,9 +7,10 @@
 Browser arena game where you don't fight: you write your fighter's **battle plan**, then watch it play out against other players' fighters.
 Engine and server are written in Rust; the engine also runs in the page as WebAssembly.
 
-- Each turn, the fighter plays the first rule of its plan whose condition holds and whose action is possible.
+- Each turn, the fighter plays the first rule of its plan whose condition holds and whose action is possible. Otherwise it attacks with whatever it holds: it never draws a weapon on its own.
 - **No randomness in fights.** Every chance is a gauge: a 9% dodge chance adds 9 to the dodge gauge each time the fighter is attacked, and the dodge happens when the gauge reaches 100 (the overflow is kept: 99 + 5 leaves 4). Same for critical hits, blocks, ripostes, stuns and disarms. Rules can react to the gauges ("enemy dodge ready", "my crit ready").
-- At each level you pick 1 upgrade out of 3. Every 2 levels the plan gets one more rule.
+- Stats come in opposed pairs (Strength / Toughness, Accuracy / Evasion, Critical / Composure, Control / Tenacity), plus Speed and Endurance: one attack point cancels exactly one defense point.
+- **No randomness in progression either.** You spend your own points. Odd levels give +2 points and a choice: one more plan rule (3 at level 1, 8 at most) or a new condition. Even levels give a weapon or a skill. Everything can be redone for free between fights.
 - You see the opponent's gear, not its plan. "Prediction" plays your plan against 40 plans the opponent could have; the real plan is revealed after the fight.
 - Online, opponents are other players' fighters (bots fill in). The server runs every fight, so results cannot be forged.
 
@@ -57,9 +58,10 @@ The server also serves the page, so your friend only needs its address:
 Jeu d'arène dans le navigateur où tu ne te bats pas : tu écris le **plan de bataille** de ton cogneur, puis tu le regardes l'appliquer contre les cogneurs des autres joueurs.
 Moteur et serveur en Rust ; le moteur tourne aussi dans la page en WebAssembly.
 
-- À chaque tour, le cogneur joue la première règle de son plan dont la condition est vraie et l'action possible.
+- À chaque tour, le cogneur joue la première règle de son plan dont la condition est vraie et l'action possible. Sinon, il attaque avec ce qu'il a en main : il ne dégaine jamais tout seul.
 - **Aucun hasard en combat.** Chaque chance est une jauge : 9 % d'esquive ajoutent 9 à la jauge d'esquive à chaque attaque reçue, et l'esquive tombe quand elle atteint 100 (le surplus est gardé : 99 + 5 donne 4). Pareil pour les critiques, blocages, ripostes, étourdissements et désarmements. Des règles peuvent réagir aux jauges (« sa prochaine esquive est prête », « mon critique est prêt »).
-- À chaque niveau tu choisis 1 amélioration parmi 3. Tous les 2 niveaux, le plan gagne une règle.
+- Les caractéristiques vont par paires opposées (Force / Robustesse, Précision / Esquive, Critique / Sang-froid, Contrôle / Ténacité), plus Vitesse et Endurance : un point d'attaque annule exactement un point de défense.
+- **Aucun hasard dans la progression non plus.** Tu répartis tes points toi-même. Niveaux impairs : +2 points et un choix entre une règle de plus dans le plan (3 au niveau 1, 8 au maximum) ou une nouvelle condition. Niveaux pairs : une arme ou une compétence. Tout se refait gratuitement entre deux combats.
 - Tu vois l'équipement de l'adversaire, pas son plan. Le « Pronostic » joue ton plan contre 40 plans qu'il pourrait avoir ; le vrai plan est révélé après le combat.
 - En ligne, les adversaires sont les cogneurs des autres joueurs (complétés par des bots). Le serveur calcule chaque combat : impossible de tricher sur le résultat.
 

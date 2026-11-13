@@ -45,7 +45,7 @@
         <ul>
           <li>Ton cogneur suit un <b>plan</b> : des règles « si… alors… » lues de haut en bas à chaque tour.</li>
           <li><b>Aucun hasard</b> : chaque chance (esquive, critique…) remplit une jauge, l'effet tombe à 100.</li>
-          <li>À chaque niveau, tu choisis <b>1 amélioration parmi 3</b>.</li>
+          <li>Tu répartis toi-même tes points et fais tous tes choix de niveau, <b>modifiables gratuitement</b> entre deux combats.</li>
           <li>Tu vois l'équipement de l'adversaire, pas son plan : il est révélé après le combat.</li>
         </ul>
       </details>
@@ -68,13 +68,15 @@
     <div class="col wide">
       <div class="card">
         <h2>Plan de bataille</h2>
-        <p class="hint">À chaque tour, ton cogneur lit les règles de haut en bas et joue la première qui s'applique et qui est possible. Sinon : il dégaine s'il est à mains nues, ou il attaque.</p>
+        <p class="hint">À chaque tour, ton cogneur lit les règles de haut en bas et joue la première qui s'applique et qui est possible. Si aucune ne s'applique, il attaque avec ce qu'il a en main : il ne dégaine jamais tout seul.</p>
         <p class="hint"><b>Aucun hasard.</b> Chaque chance remplit une jauge : 9 % de chances d'esquiver ajoutent 9 à la jauge d'esquive à chaque attaque reçue, et l'esquive tombe quand elle atteint 100 (le surplus est gardé). Pareil pour les critiques, le blocage, la riposte, l'étourdissement et le désarmement. Les règles « esquive prête » et « critique prêt » permettent d'en jouer.</p>
         <div class="row">
           <label for="stance">Posture de départ</label>
           <select id="stance"></select>
         </div>
         <ol id="plan"></ol>
+        <div class="rule-fixed"><span>Sinon</span><span class="arrow">→</span><span>Attaquer</span><span class="muted">(toujours là, ne compte pas)</span></div>
+        <p id="plan-warn" class="warn" hidden></p>
         <button id="add-rule" class="ghost">+ Ajouter une règle</button>
         <p id="slots" class="hint"></p>
       </div>
@@ -117,11 +119,23 @@
   </div>
 </div>
 
-<div id="levelup" class="overlay" hidden>
-  <div class="card narrow">
-    <h2>Niveau supérieur !</h2>
-    <p>Choisis une amélioration.</p>
-    <div id="choices"></div>
+<div id="build" class="overlay" hidden>
+  <div class="card build-box">
+    <h2 id="build-title">Améliorations</h2>
+    <p class="hint">Tout se refait gratuitement entre deux combats : points, places de règle, conditions, armes et compétences.</p>
+    <h3>Caractéristiques <span id="build-points" class="muted"></span></h3>
+    <p class="hint">Chaque point d'attaque annule exactement un point de la défense en face.</p>
+    <div id="build-stats" class="build-stats"></div>
+    <div id="build-levels-box">
+      <h3>Choix de niveau</h3>
+      <p class="hint">Niveaux impairs : +2 points et une place de règle ou une condition. Niveaux pairs : une arme ou une compétence.</p>
+      <ol id="build-levels" class="build-levels"></ol>
+    </div>
+    <p id="build-issue" class="warn"></p>
+    <div class="row between">
+      <button class="ghost" id="build-cancel">Annuler</button>
+      <button id="build-save">Valider</button>
+    </div>
   </div>
 </div>
 

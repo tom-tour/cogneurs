@@ -85,6 +85,7 @@ struct Side<'a> {
     counter: Gauge,
     stun: Gauge,
     grip: Gauge,
+    snare: Gauge,
 }
 
 impl<'a> Side<'a> {
@@ -110,6 +111,7 @@ impl<'a> Side<'a> {
             counter: Gauge::default(),
             stun: Gauge::default(),
             grip: Gauge::default(),
+            snare: Gauge::default(),
         }
     }
 
@@ -118,31 +120,36 @@ impl<'a> Side<'a> {
     }
 
     fn rate(&self) -> i32 {
-        (10 + self.f.spd * 2 + self.weapon_stats().speed).max(5)
+        (12 + self.f.stats.spd * 2 + self.weapon_stats().speed).max(5)
     }
 
-    fn dodge_chance(&self) -> f32 {
-        let mut d = 0.04 + self.f.agi as f32 * 0.015;
-        if self.f.has(Skill::Evasion) {
-            d += 0.10;
-        }
-        d += match self.stance {
+    /// Dodge bonus from the stance.
+    fn stance_dodge(&self) -> f32 {
+        match self.stance {
             Stance::Aggressive => -0.05,
             Stance::Balanced => 0.0,
             Stance::Defensive => 0.08,
-        };
-        d.max(0.0)
+        }
     }
 
     /// Chance (in %) that an attack of `self` on `foe` is dodged.
+    /// Accuracy against evasion: 2% per point of difference.
     fn miss_pct(&self, foe: &Side, acc_bonus: f32) -> i32 {
         let ws = self.weapon_stats();
-        let hit = (ws.acc + acc_bonus + self.f.agi as f32 * 0.01 - foe.dodge_chance()).clamp(0.25, 0.97);
+        let diff = (self.f.stats.acc - foe.f.stats.eva) as f32;
+        let hit = (ws.acc - 0.04 + acc_bonus + diff * 0.02 - foe.stance_dodge()).clamp(0.25, 0.97);
         100 - pct(hit)
     }
 
-    fn crit_pct(&self) -> i32 {
-        pct(self.weapon_stats().crit + self.f.agi as f32 * 0.005)
+    /// Critical against composure: 2% per point of difference.
+    fn crit_pct(&self, foe: &Side) -> i32 {
+        let diff = (self.f.stats.crit - foe.f.stats.cool) as f32;
+        pct((self.weapon_stats().crit + diff * 0.02).max(0.0))
+    }
+
+    /// Control against tenacity.
+    fn control(&self, foe: &Side) -> i32 {
+        self.f.stats.ctl - foe.f.stats.ten
     }
 
     fn hp_pct_below(&self, p: u8) -> bool {
@@ -156,8 +163,10 @@ impl<'a> Side<'a> {
             .max_by(|a, b| a.stats().dmg.partial_cmp(&b.stats().dmg).unwrap())
     }
 
-    fn damage(&self, ws: WeaponStats, mult: f32) -> f32 {
-        let mut d = ws.dmg * (1.0 + self.f.str as f32 * 0.08) * mult;
+    /// Strength against toughness: 8% per point of difference.
+    fn damage(&self, ws: WeaponStats, mult: f32, foe: &Side) -> f32 {
+        let diff = (self.f.stats.str - foe.f.stats.tou) as f32;
+        let mut d = ws.dmg * (1.0 + diff * 0.08).max(0.3) * mult;
         d *= match self.stance {
             Stance::Aggressive => 1.2,
             Stance::Balanced => 1.0,
@@ -187,7 +196,9 @@ fn cond_holds(c: Cond, me: &Side, foe: &Side) -> bool {
         Cond::EnemyStunned => foe.stunned,
         Cond::EnemyGuarding => foe.guarding,
         Cond::EnemyDodgeReady => foe.dodge.ready(me.miss_pct(foe, 0.0)),
-        Cond::CritReady => me.crit.ready(me.crit_pct()),
+        Cond::CritReady => me.crit.ready(me.crit_pct(foe)),
+        Cond::EnemyCritReady => foe.crit.ready(foe.crit_pct(me)),
+        Cond::Faster => me.rate() > foe.rate(),
     }
 }
 
@@ -207,17 +218,13 @@ fn action_possible(a: Action, me: &Side, foe: &Side) -> bool {
 }
 
 fn choose(me: &Side, foe: &Side) -> (i32, Action) {
-    let slots = plan_slots(me.f.level);
-    for (i, r) in me.f.plan.iter().take(slots).enumerate() {
-        if cond_holds(r.cond, me, foe) && action_possible(r.action, me, foe) {
+    for (i, r) in me.f.plan.iter().take(me.f.slots()).enumerate() {
+        if me.f.knows(r.cond) && cond_holds(r.cond, me, foe) && action_possible(r.action, me, foe) {
             return (i as i32, r.action);
         }
     }
-    if me.wield.is_none() && me.best_weapon().is_some() {
-        (-1, Action::EquipBest)
-    } else {
-        (-1, Action::Attack)
-    }
+    // Otherwise: attack with whatever is in hand.
+    (-1, Action::Attack)
 }
 
 fn snapshot(s: &[Side; 2]) -> ([i32; 2], Gauges) {
@@ -270,9 +277,9 @@ fn strike(s: &mut [Side; 2], a: usize, ev: &mut Vec<Event>, rule: i32, o: Strike
         return false;
     }
 
-    let crit_pct = s[a].crit_pct();
+    let crit_pct = s[a].crit_pct(&s[d]);
     let crit = s[a].crit.add(crit_pct);
-    let mut dmg = s[a].damage(ws, o.mult);
+    let mut dmg = s[a].damage(ws, o.mult, &s[d]);
     if crit {
         dmg *= 1.5;
     }
@@ -288,9 +295,6 @@ fn strike(s: &mut [Side; 2], a: usize, ev: &mut Vec<Event>, rule: i32, o: Strike
             blocked = true;
         }
     }
-    if s[d].f.has(Skill::Toughness) {
-        dmg -= 2.0;
-    }
     let dmg = (dmg.round() as i32).max(1);
     s[d].hp -= dmg;
 
@@ -302,9 +306,12 @@ fn strike(s: &mut [Side; 2], a: usize, ev: &mut Vec<Event>, rule: i32, o: Strike
     e.value = dmg;
 
     if s[d].hp > 0 {
-        if weapon == Some(WeaponKind::Club) && !blocked && o.kind != "throw" && s[a].stun.add(25) {
+        if weapon == Some(WeaponKind::Club) && !blocked && o.kind != "throw" {
+            let stun = 25 + 4 * s[a].control(&s[d]);
+            if s[a].stun.add(stun) {
             s[d].stunned = true;
             push(ev, s, d, "stunned", -1);
+            }
         }
         if can_counter && blocked && s[d].guarding && s[d].counter.add(60) {
             riposte(s, d, ev);
@@ -315,7 +322,7 @@ fn strike(s: &mut [Side; 2], a: usize, ev: &mut Vec<Event>, rule: i32, o: Strike
 
 fn riposte(s: &mut [Side; 2], who: usize, ev: &mut Vec<Event>) {
     let ws = s[who].weapon_stats();
-    let dmg = (s[who].damage(ws, 0.6).round() as i32).max(1);
+    let dmg = (s[who].damage(ws, 0.6, &s[1 - who]).round() as i32).max(1);
     s[1 - who].hp -= dmg;
     let weapon = s[who].wield;
     let e = push(ev, s, who, "counter", -1);
@@ -368,9 +375,10 @@ fn take_turn(s: &mut [Side; 2], i: usize, ev: &mut Vec<Event>) {
         }
         Action::ThrowNet => {
             s[i].net_ready = false;
-            // The net uses the target's dodge gauge, at half its dodge chance.
-            let miss = 100 - pct((0.8 - s[f].dodge_chance() * 0.5).clamp(0.3, 0.95));
-            let hit = !s[f].dodge.add(miss);
+            // The target's snare gauge fills with the failure chance.
+            let ok = 0.75 + s[i].control(&s[f]) as f32 * 0.03 - s[f].stance_dodge() * 0.5;
+            let miss = 100 - pct(ok.clamp(0.3, 0.95));
+            let hit = !s[f].snare.add(miss);
             if hit {
                 s[f].stunned = true;
             }
@@ -381,7 +389,7 @@ fn take_turn(s: &mut [Side; 2], i: usize, ev: &mut Vec<Event>) {
         Action::Disarm => {
             s[i].cd_disarm = 3;
             // The target's grip gauge fills with the failure chance.
-            let ok = (0.6 + (s[i].f.agi - s[f].f.agi) as f32 * 0.05).clamp(0.2, 0.9);
+            let ok = (0.6 + s[i].control(&s[f]) as f32 * 0.05).clamp(0.2, 0.9);
             let hit = !s[f].grip.add(100 - pct(ok));
             let w = s[f].wield;
             if hit {
@@ -420,9 +428,9 @@ fn take_turn(s: &mut [Side; 2], i: usize, ev: &mut Vec<Event>) {
     }
 }
 
-/// Who acts first on equal action gauges: speed, then agility, then side A.
+/// Who acts first on equal action gauges: speed, then accuracy, then side A.
 fn first_on_tie(s: &[Side; 2]) -> usize {
-    let k = |x: &Side| (x.f.spd, x.f.agi);
+    let k = |x: &Side| (x.f.stats.spd, x.f.stats.acc);
     if k(&s[1]) > k(&s[0]) {
         1
     } else {

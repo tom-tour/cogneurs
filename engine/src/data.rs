@@ -1,4 +1,4 @@
-//! Game data: fighters, weapons, skills and battle plans.
+//! Game data: fighters, weapons, skills, stats and battle plans.
 
 use serde::{Deserialize, Serialize};
 
@@ -66,22 +66,10 @@ pub enum Skill {
     Counter,
     /// +40% damage under 30% HP.
     Fury,
-    /// -2 damage on every hit taken.
-    Toughness,
-    /// +10% dodge.
-    Evasion,
 }
 
-pub const ALL_SKILLS: [Skill; 8] = [
-    Skill::Shield,
-    Skill::Potion,
-    Skill::PowerStrike,
-    Skill::Disarm,
-    Skill::Counter,
-    Skill::Fury,
-    Skill::Toughness,
-    Skill::Evasion,
-];
+pub const ALL_SKILLS: [Skill; 6] =
+    [Skill::Shield, Skill::Potion, Skill::PowerStrike, Skill::Disarm, Skill::Counter, Skill::Fury];
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[serde(rename_all = "snake_case")]
@@ -92,16 +80,54 @@ pub enum Stance {
     Defensive,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "snake_case")]
-pub enum Stat {
-    Str,
-    Agi,
-    Spd,
-    End,
+/// Stats come in opposed pairs: one attack point cancels exactly one defense
+/// point, since every formula uses the difference. Speed and endurance stand
+/// alone.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(default)]
+pub struct Stats {
+    /// Strength: damage dealt.
+    pub str: i32,
+    /// Toughness: damage taken.
+    pub tou: i32,
+    /// Accuracy: hit chance.
+    pub acc: i32,
+    /// Evasion: dodge chance.
+    pub eva: i32,
+    /// Critical chance.
+    pub crit: i32,
+    /// Composure: critical hits taken.
+    pub cool: i32,
+    /// Control: stun, disarm and net.
+    pub ctl: i32,
+    /// Tenacity: resists control.
+    pub ten: i32,
+    pub spd: i32,
+    pub end: i32,
 }
 
-pub const ALL_STATS: [Stat; 4] = [Stat::Str, Stat::Agi, Stat::Spd, Stat::End];
+impl Stats {
+    pub fn values(&self) -> [i32; 10] {
+        [self.str, self.tou, self.acc, self.eva, self.crit, self.cool, self.ctl, self.ten, self.spd, self.end]
+    }
+    pub fn sum(&self) -> i32 {
+        self.values().iter().sum()
+    }
+    pub fn values_mut(&mut self) -> [&mut i32; 10] {
+        [
+            &mut self.str,
+            &mut self.tou,
+            &mut self.acc,
+            &mut self.eva,
+            &mut self.crit,
+            &mut self.cool,
+            &mut self.ctl,
+            &mut self.ten,
+            &mut self.spd,
+            &mut self.end,
+        ]
+    }
+}
 
 /// When a rule applies.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -121,7 +147,21 @@ pub enum Cond {
     EnemyDodgeReady,
     /// My next hit will fill my crit gauge.
     CritReady,
+    /// The enemy's next hit will fill its crit gauge.
+    EnemyCritReady,
+    /// My action gauge fills faster than the enemy's.
+    Faster,
 }
+
+/// Conditions that must be unlocked on an odd level before use.
+pub const UNLOCKABLE_CONDS: [Cond; 6] = [
+    Cond::EnemyStunned,
+    Cond::EnemyGuarding,
+    Cond::EnemyDodgeReady,
+    Cond::CritReady,
+    Cond::EnemyCritReady,
+    Cond::Faster,
+];
 
 /// What a rule does.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -145,35 +185,106 @@ pub struct Rule {
     pub action: Action,
 }
 
+/// The choice made when reaching a level. Odd levels give a rule slot or a
+/// condition, even levels a weapon or a skill (the skill tree comes later).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum Pick {
+    Slot,
+    Cond { cond: Cond },
+    Weapon { weapon: WeaponKind },
+    Skill { skill: Skill },
+}
+
+impl Pick {
+    pub fn odd(self) -> bool {
+        matches!(self, Pick::Slot | Pick::Cond { .. })
+    }
+}
+
+pub const START_POINTS: i32 = 10;
+pub const BASE_SLOTS: usize = 3;
+pub const MAX_RULES: usize = 8;
+
+/// Stat points to spend at a level: the starting points plus 2 per odd level.
+pub fn stat_budget(level: u32) -> i32 {
+    START_POINTS + 2 * ((level.max(1) as i32 - 1) / 2)
+}
+
+/// Highest value a single stat may reach at a level.
+pub fn stat_cap(level: u32) -> i32 {
+    4 + level as i32
+}
+
+pub fn xp_needed(level: u32) -> u32 {
+    2 + level
+}
+
 fn one() -> u32 {
     1
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct Fighter {
     pub name: String,
-    #[serde(default = "one")]
     pub level: u32,
-    #[serde(default)]
     pub xp: u32,
-    #[serde(default)]
-    pub pending: u32,
-    pub str: i32,
-    pub agi: i32,
-    pub spd: i32,
-    pub end: i32,
-    #[serde(default)]
+    pub stats: Stats,
+    /// One pick per level gained, in order (level 2 first).
+    pub picks: Vec<Pick>,
+    /// Derived from the picks.
     pub weapons: Vec<WeaponKind>,
-    #[serde(default)]
+    /// Derived from the picks.
     pub skills: Vec<Skill>,
-    #[serde(default)]
     pub plan: Vec<Rule>,
-    #[serde(default)]
     pub stance: Stance,
-    #[serde(default)]
     pub wins: u32,
-    #[serde(default)]
     pub losses: u32,
+}
+
+/// Stored form. Weapons and skills are always rebuilt from the picks, so
+/// saves from older versions (with their own stats, weapons and skills) load
+/// as fighters whose points and choices are handed back.
+#[derive(Deserialize)]
+struct FighterSer {
+    name: String,
+    #[serde(default = "one")]
+    level: u32,
+    #[serde(default)]
+    xp: u32,
+    #[serde(default)]
+    stats: Stats,
+    #[serde(default)]
+    picks: Vec<Pick>,
+    #[serde(default)]
+    plan: Vec<Rule>,
+    #[serde(default)]
+    stance: Stance,
+    #[serde(default)]
+    wins: u32,
+    #[serde(default)]
+    losses: u32,
+}
+
+impl<'de> Deserialize<'de> for Fighter {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = FighterSer::deserialize(d)?;
+        let mut f = Fighter {
+            name: s.name,
+            level: s.level.max(1),
+            xp: s.xp,
+            stats: s.stats,
+            picks: s.picks,
+            weapons: Vec::new(),
+            skills: Vec::new(),
+            plan: s.plan,
+            stance: s.stance,
+            wins: s.wins,
+            losses: s.losses,
+        };
+        f.rebuild();
+        Ok(f)
+    }
 }
 
 impl Fighter {
@@ -182,26 +293,78 @@ impl Fighter {
     }
 
     pub fn max_hp(&self) -> i32 {
-        30 + self.end * 8
+        50 + self.stats.end * 6
     }
 
-    pub fn stat_mut(&mut self, s: Stat) -> &mut i32 {
-        match s {
-            Stat::Str => &mut self.str,
-            Stat::Agi => &mut self.agi,
-            Stat::Spd => &mut self.spd,
-            Stat::End => &mut self.end,
+    /// Recomputes weapons and skills from the picks.
+    pub fn rebuild(&mut self) {
+        self.weapons.clear();
+        self.skills.clear();
+        for p in &self.picks {
+            match *p {
+                Pick::Weapon { weapon } if !self.weapons.contains(&weapon) => self.weapons.push(weapon),
+                Pick::Skill { skill } if !self.skills.contains(&skill) => self.skills.push(skill),
+                _ => {}
+            }
         }
     }
-}
 
-pub const MAX_RULES: usize = 8;
+    /// Rules the plan may use.
+    pub fn slots(&self) -> usize {
+        (BASE_SLOTS + self.picks.iter().filter(|p| **p == Pick::Slot).count()).min(MAX_RULES)
+    }
 
-/// Number of rules a fighter may use in its plan.
-pub fn plan_slots(level: u32) -> usize {
-    (2 + level as usize / 2).min(MAX_RULES)
-}
+    /// Whether the condition may be used in this fighter's plan.
+    pub fn knows(&self, c: Cond) -> bool {
+        !UNLOCKABLE_CONDS.contains(&c) || self.picks.contains(&Pick::Cond { cond: c })
+    }
 
-pub fn xp_needed(level: u32) -> u32 {
-    2 + level
+    /// Why the build cannot fight yet, or None when it is complete and valid.
+    pub fn build_issue(&self) -> Option<String> {
+        let cap = stat_cap(self.level);
+        if self.stats.values().iter().any(|v| *v < 0 || *v > cap) {
+            return Some(format!("Chaque caractéristique doit rester entre 0 et {cap}."));
+        }
+        let budget = stat_budget(self.level);
+        let sum = self.stats.sum();
+        if sum > budget {
+            return Some(format!("Trop de points dépensés ({sum} / {budget})."));
+        }
+        let needed = self.level as usize - 1;
+        if self.picks.len() > needed {
+            return Some("Trop de choix pour ce niveau.".into());
+        }
+        let mut slot_picks = 0;
+        for (i, p) in self.picks.iter().enumerate() {
+            let level = i as u32 + 2;
+            if p.odd() != (level % 2 == 1) {
+                return Some(format!("Le choix du niveau {level} n'est pas du bon type."));
+            }
+            match *p {
+                Pick::Slot => slot_picks += 1,
+                Pick::Cond { cond } if !UNLOCKABLE_CONDS.contains(&cond) => {
+                    return Some("Cette condition n'est pas à débloquer.".into());
+                }
+                Pick::Weapon { weapon: _ } | Pick::Skill { skill: _ } | Pick::Cond { cond: _ } => {
+                    if self.picks[..i].contains(p) {
+                        return Some(format!("Le choix du niveau {level} est déjà pris."));
+                    }
+                }
+            }
+        }
+        if slot_picks > MAX_RULES - BASE_SLOTS {
+            return Some(format!("{MAX_RULES} règles au maximum."));
+        }
+        if sum < budget {
+            return Some(format!("Il reste {} point{} à répartir.", budget - sum, if budget - sum > 1 { "s" } else { "" }));
+        }
+        if self.picks.len() < needed {
+            return Some("Il reste des choix de niveau à faire.".into());
+        }
+        None
+    }
+
+    pub fn complete(&self) -> bool {
+        self.build_issue().is_none()
+    }
 }
