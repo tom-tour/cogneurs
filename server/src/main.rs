@@ -234,8 +234,9 @@ fn make_offers(db: &Db, me: &Fighter, seed: u64) -> Vec<Offer> {
 
 // ---------- Handlers ----------
 
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+async fn health(State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    let players = app.db.lock().await.players.len();
+    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION"), "players": players }))
 }
 
 #[derive(Deserialize)]

@@ -132,7 +132,9 @@ const Local = {
 /** Online mode: the server owns the fighters and runs the fights. */
 const Remote = {
   online: true,
-  base: window.COGNEURS_API || '',
+  /** Address of the server once found, null while unknown. */
+  base: null,
+  lastLookup: 0,
   get token() { return store.get('cogneurs.token'); },
   async req(method, path, body) {
     const headers = { 'Content-Type': 'application/json' };
@@ -146,26 +148,45 @@ const Remote = {
     }
     return data;
   },
+  /** Health info of the server at `base`, or null if it does not answer. */
   async check(base) {
     try {
-      const r = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(6000) });
-      return r.ok && (await r.json()).ok === true;
-    } catch { return false; }
+      const r = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(6000), cache: 'no-store' });
+      if (!r.ok) return null;
+      const h = await r.json();
+      return h.ok === true ? h : null;
+    } catch { return null; }
   },
-  /** Finds a reachable server: the fixed address, then the published one. */
+  /**
+   * Finds a reachable server: the last known one, the fixed address, then
+   * the address published by the home launcher. The published address is
+   * read at most every 30 s (the GitHub API allows 60 reads an hour, and
+   * unchanged answers revalidated with "no-cache" do not count).
+   */
   async locate() {
-    const onPages = location.hostname.endsWith('github.io');
+    if (this.base != null) {
+      const h = await this.check(this.base);
+      if (h) return h;
+    }
     const fixed = window.COGNEURS_API || '';
-    if ((fixed || !onPages) && await this.check(fixed)) { this.base = fixed; return true; }
+    if (fixed || !location.hostname.endsWith('github.io')) {
+      const h = await this.check(fixed);
+      if (h) { this.base = fixed; return h; }
+    }
     const discovery = window.COGNEURS_DISCOVERY;
-    if (!discovery) return false;
+    if (!discovery || Date.now() - this.lastLookup < 30000) return null;
+    this.lastLookup = Date.now();
     try {
-      const r = await fetch(discovery, { cache: 'no-store' });
+      const r = await fetch(discovery, { cache: 'no-cache' });
       const data = await r.json();
       const info = data.files ? JSON.parse(Object.values(data.files)[0].content) : data;
-      if (info.url && await this.check(info.url)) { this.base = info.url.replace(/\/$/, ''); return true; }
+      if (info.url) {
+        const url = info.url.replace(/\/$/, '');
+        const h = await this.check(url);
+        if (h) { this.base = url; return h; }
+      }
     } catch { /* treated as offline */ }
-    return false;
+    return null;
   },
   async me() {
     if (!this.token) return null;
@@ -258,6 +279,9 @@ function ruleText(r) {
 function show(id) {
   for (const s of document.querySelectorAll('.screen')) s.hidden = s.id !== id;
   $('#reset').hidden = id !== 'home';
+  $('#to-menu').hidden = id === 'menu';
+  $('#mode').hidden = id === 'menu' || !backend.online;
+  if (id === 'menu') { $('#levelup').hidden = true; renderMenu(); startMenuArt(); } else stopMenuArt();
 }
 
 function setView(v) {
@@ -308,7 +332,8 @@ function planChanged() {
   renderOpponents();
   clearTimeout(planTimer);
   const { plan, stance } = view.fighter;
-  planTimer = setTimeout(() => guarded(() => backend.savePlan(plan, stance)), 400);
+  const b = backend;
+  planTimer = setTimeout(() => guarded(() => b.savePlan(plan, stance)), 400);
 }
 
 function renderPlan(f) {
@@ -562,20 +587,102 @@ function playFight(meF, foeF, res) {
   anim = requestAnimationFrame(frame);
 }
 
+// ---------- Server status ----------
+const Status = {
+  state: 'searching', // 'searching' | 'online' | 'offline'
+  players: null,
+  me: undefined, // online fighter summary, fetched once the server is found
+  async refresh() {
+    const h = await Remote.locate();
+    const was = this.state;
+    this.state = h ? 'online' : 'offline';
+    this.players = h ? h.players : null;
+    if (h && this.me === undefined && Remote.token) {
+      this.me = null;
+      try { this.me = (await Remote.req('GET', '/me')).fighter; } catch { this.me = undefined; }
+    }
+    renderStatus();
+    if (was === 'online' && this.state === 'offline' && backend.online && $('#menu').hidden) {
+      toast('Le serveur ne répond plus.');
+    }
+  },
+  start() {
+    this.refresh();
+    setInterval(() => this.refresh(), 10000);
+  },
+};
+
+function renderStatus() {
+  const st = Status.state;
+  const label = { searching: 'Recherche du serveur…', online: 'Serveur en ligne', offline: 'Serveur hors ligne' }[st];
+  const box = $('#menu-status');
+  box.className = `server-status ${st}`;
+  box.lastElementChild.textContent = label;
+  $('#play-online').disabled = st !== 'online';
+  let info = '';
+  if (st === 'online') {
+    const n = Status.players;
+    info = `${n} cogneur${n > 1 ? 's' : ''} inscrit${n > 1 ? 's' : ''}`;
+    if (Status.me) info += ` · le tien : ${Status.me.name}, niv. ${Status.me.level}`;
+  } else if (st === 'offline') {
+    info = Remote.token ? "Ton cogneur en ligne t'attend : il reviendra avec le serveur." : 'Le serveur se met en ligne quand son hôte le lance.';
+  }
+  $('#online-info').textContent = info;
+  // Header badge while playing online.
+  const tag = $('#mode');
+  tag.className = `tag status ${st}`;
+  tag.lastElementChild.textContent = st === 'online' ? 'en ligne' : st === 'offline' ? 'serveur injoignable' : 'connexion…';
+}
+
+function renderMenu() {
+  Local.load();
+  const f = Local.s && Local.s.fighter;
+  $('#offline-info').textContent = f ? `Ton cogneur : ${f.name}, niv. ${f.level}` : 'Nouveau cogneur';
+  renderStatus();
+}
+
+async function enter(b) {
+  backend = b;
+  view = null;
+  const v = await guarded(() => backend.me());
+  $('#create-title').textContent = backend.online ? 'Crée ton cogneur (en ligne)' : 'Crée ton cogneur (solo)';
+  if (v) { show('home'); setView(v); } else if (v !== undefined) { show('create'); }
+}
+
+// ---------- Menu art ----------
+let menuAnim = null;
+function startMenuArt() {
+  if (menuAnim) return;
+  const ctx = $('#menu-art').getContext('2d');
+  const mk = (i, wield, stance) => ({
+    hp: 1, shown: 1, max: 1, dir: i === 0 ? 1 : -1, color: i === 0 ? '#e8893a' : '#6ea8e0',
+    flash: 0, wield, guard: false, stunned: false, stance,
+  });
+  const sides = [mk(0, 'sword', 'aggressive'), mk(1, 'club', 'defensive')];
+  const frame = (now) => {
+    ctx.clearRect(0, 0, 440, 170);
+    const t = now / 1000;
+    const clash = Math.max(0, Math.sin(t * 1.6)) ** 6; // a lunge now and then
+    sides.forEach((s, i) => {
+      ctx.save();
+      ctx.translate(0, Math.sin(t * 3 + i * 1.7) * 2.5);
+      const x = (i === 0 ? 140 : 300) + s.dir * clash * (i === 0 ? 34 : 4);
+      s.flash = i === 1 ? clash * 0.4 : 0;
+      drawFighter(ctx, x, 140, s);
+      ctx.restore();
+    });
+    menuAnim = requestAnimationFrame(frame);
+  };
+  menuAnim = requestAnimationFrame(frame);
+}
+function stopMenuArt() {
+  cancelAnimationFrame(menuAnim);
+  menuAnim = null;
+}
+
 // ---------- Boot ----------
 async function boot() {
   await loadEngine();
-  $('#mode').textContent = 'connexion au serveur…';
-  backend = (await Remote.locate()) ? Remote : Local;
-  $('#mode').textContent = backend.online ? '● serveur en ligne' : '● serveur hors ligne · solo';
-  $('#mode').className = `tag status ${backend.online ? 'on' : 'off'}`;
-  if (!backend.online && window.COGNEURS_DISCOVERY) {
-    const note = el('div', { class: 'offline-note' },
-      'Le serveur de l\'arène est hors ligne : tu joues en solo, avec un cogneur séparé. ',
-      Remote.token ? 'Ton cogneur en ligne t\'attend, il reviendra avec le serveur. ' : '',
-      el('button', { class: 'ghost small', onclick: () => location.reload() }, 'Réessayer'));
-    document.querySelector('main').prepend(note);
-  }
   $('#create-form').onsubmit = async (e) => {
     e.preventDefault();
     const name = $('#name').value.trim();
@@ -591,19 +698,21 @@ async function boot() {
       : 'Abandonner ce cogneur et en créer un nouveau ?';
     if (!confirm(msg)) return;
     backend.forget();
+    if (backend.online) Status.me = undefined;
     view = null;
     $('#name').value = '';
     show('create');
   };
   $('#reroll').onclick = async () => setView(await guarded(() => backend.reroll()));
+  $('#to-menu').onclick = () => {
+    if (view && backend === Remote) Status.me = view.fighter;
+    show('menu');
+  };
+  $('#play-online').onclick = () => enter(Remote);
+  $('#play-offline').onclick = () => enter(Local);
 
-  const v = await backend.me();
-  if (v) {
-    show('home');
-    setView(v);
-  } else {
-    show('create');
-  }
+  show('menu');
+  Status.start();
 }
 
 boot().catch((e) => {

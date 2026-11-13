@@ -10,17 +10,51 @@
 <header>
   <h1>Cogneurs</h1>
   <span class="tag">prototype</span>
-  <span class="tag" id="mode"></span>
+  <span class="tag status" id="mode" hidden><i class="dot"></i><span></span></span>
   <div class="header-right">
+    <button id="to-menu" class="ghost small" hidden>Menu</button>
     <button id="reset" class="ghost small" hidden>Nouveau cogneur</button>
     <a class="kofi" href="https://ko-fi.com/tom_t" target="_blank" rel="noopener" title="Soutenir le jeu sur Ko-fi">♥ Soutenir sur Ko-fi</a>
   </div>
 </header>
 
 <main>
+  <section id="menu" class="screen" hidden>
+    <div class="menu">
+      <canvas id="menu-art" width="440" height="170" aria-hidden="true"></canvas>
+      <h2 class="logo">Cogneurs</h2>
+      <p class="tagline">Tu ne te bats pas : tu écris le plan de bataille, ton cogneur l'applique.</p>
+
+      <button class="mode-card" id="play-online" disabled>
+        <span class="mode-head">
+          <span class="mode-title">Jouer en ligne</span>
+          <span class="server-status searching" id="menu-status"><i class="dot"></i><span>Recherche du serveur…</span></span>
+        </span>
+        <span class="mode-desc">Affronte les cogneurs des autres joueurs et grimpe au classement.</span>
+        <span class="mode-info" id="online-info"></span>
+      </button>
+
+      <button class="mode-card" id="play-offline">
+        <span class="mode-head"><span class="mode-title">Jouer hors ligne</span></span>
+        <span class="mode-desc">Solo contre des bots, sauvegardé dans ce navigateur.</span>
+        <span class="mode-info" id="offline-info"></span>
+      </button>
+
+      <details class="howto">
+        <summary>Comment ça marche ?</summary>
+        <ul>
+          <li>Ton cogneur suit un <b>plan</b> : des règles « si… alors… » lues de haut en bas à chaque tour.</li>
+          <li><b>Aucun hasard</b> : chaque chance (esquive, critique…) remplit une jauge, l'effet tombe à 100.</li>
+          <li>À chaque niveau, tu choisis <b>1 amélioration parmi 3</b>.</li>
+          <li>Tu vois l'équipement de l'adversaire, pas son plan : il est révélé après le combat.</li>
+        </ul>
+      </details>
+    </div>
+  </section>
+
   <section id="create" class="screen" hidden>
     <div class="card narrow">
-      <h2>Crée ton cogneur</h2>
+      <h2 id="create-title">Crée ton cogneur</h2>
       <p>Tu ne contrôles pas ton combattant pendant le combat : tu écris son <b>plan de bataille</b>, puis tu le regardes l'appliquer.</p>
       <form id="create-form">
         <input id="name" maxlength="16" placeholder="Nom" required autocomplete="off">
