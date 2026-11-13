@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cogneurs</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Cogneurs</h1>
+  <span class="tag">prototype</span>
+  <span class="tag" id="mode"></span>
+  <button id="reset" class="ghost small" hidden>Nouveau cogneur</button>
+</header>
+
+<main>
+  <section id="create" class="screen" hidden>
+    <div class="card narrow">
+      <h2>Crée ton cogneur</h2>
+      <p>Tu ne contrôles pas ton combattant pendant le combat : tu écris son <b>plan de bataille</b>, puis tu le regardes l'appliquer.</p>
+      <form id="create-form">
+        <input id="name" maxlength="16" placeholder="Nom" required autocomplete="off">
+        <button type="submit">Entrer dans l'arène</button>
+      </form>
+    </div>
+  </section>
+
+  <section id="home" class="screen" hidden>
+    <div class="col" id="sheet"></div>
+    <div class="col wide">
+      <div class="card">
+        <h2>Plan de bataille</h2>
+        <p class="hint">À chaque tour, ton cogneur lit les règles de haut en bas et joue la première qui s'applique et qui est possible. Sinon : il dégaine s'il est à mains nues, ou il attaque.</p>
+        <p class="hint"><b>Aucun hasard.</b> Chaque chance remplit une jauge : 9 % de chances d'esquiver ajoutent 9 à la jauge d'esquive à chaque attaque reçue, et l'esquive tombe quand elle atteint 100 (le surplus est gardé). Pareil pour les critiques, le blocage, la riposte, l'étourdissement et le désarmement. Les règles « esquive prête » et « critique prêt » permettent d'en jouer.</p>
+        <div class="row">
+          <label for="stance">Posture de départ</label>
+          <select id="stance"></select>
+        </div>
+        <ol id="plan"></ol>
+        <button id="add-rule" class="ghost">+ Ajouter une règle</button>
+        <p id="slots" class="hint"></p>
+      </div>
+    </div>
+    <div class="col" id="arena">
+      <div class="card">
+        <div class="row between">
+          <h2>Arène</h2>
+          <button id="reroll" class="ghost small">Autres adversaires</button>
+        </div>
+        <p class="hint">Tu vois l'équipement de l'adversaire, pas son plan. Le pronostic joue ton plan actuel contre 40 plans qu'il pourrait avoir.</p>
+        <p id="fights-left" class="hint"></p>
+        <div id="opponents"></div>
+      </div>
+      <div class="card" id="history-card" hidden>
+        <h2>Derniers combats</h2>
+        <ol id="history" class="plain"></ol>
+      </div>
+      <div class="card" id="board-card" hidden>
+        <h2>Classement</h2>
+        <ol id="board"></ol>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="fight" class="overlay" hidden>
+  <div class="fight-box">
+    <canvas id="stage" width="720" height="300"></canvas>
+    <div class="row between controls">
+      <div>
+        <button class="ghost small speed" data-speed="1">×1</button>
+        <button class="ghost small speed" data-speed="3">×3</button>
+        <button class="ghost small" id="skip">Fin</button>
+      </div>
+      <button id="fight-close" hidden>Continuer</button>
+    </div>
+    <div id="result" hidden></div>
+    <ol id="log"></ol>
+  </div>
+</div>
+
+<div id="levelup" class="overlay" hidden>
+  <div class="card narrow">
+    <h2>Niveau supérieur !</h2>
+    <p>Choisis une amélioration.</p>
+    <div id="choices"></div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="draw.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
