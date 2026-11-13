@@ -65,6 +65,7 @@ impl Gauge {
 
 struct Side<'a> {
     f: &'a Fighter,
+    syn: Vec<Synergy>,
     hp: i32,
     max_hp: i32,
     gauge: i32,
@@ -92,6 +93,7 @@ impl<'a> Side<'a> {
     fn new(f: &'a Fighter) -> Self {
         Side {
             f,
+            syn: f.synergies(),
             hp: f.max_hp(),
             max_hp: f.max_hp(),
             gauge: 0,
@@ -115,8 +117,31 @@ impl<'a> Side<'a> {
         }
     }
 
+    /// The weapon in hand, with its mastery bonuses.
     fn weapon_stats(&self) -> WeaponStats {
-        self.wield.map(|w| w.stats()).unwrap_or(FISTS)
+        let Some(w) = self.wield else { return FISTS };
+        let mut s = w.stats();
+        let tier = self.f.tier(w);
+        if tier >= 1 {
+            s.acc += 0.03;
+        }
+        if tier >= 2 {
+            s.dmg *= 1.1;
+        }
+        if tier >= 3 {
+            s.crit += 0.05;
+        }
+        s
+    }
+
+    fn has_syn(&self, x: Synergy) -> i32 {
+        self.syn.contains(&x) as i32
+    }
+
+    /// Offensive synergy of `self` minus the defensive answer of `foe`:
+    /// 0 when both or neither are active.
+    fn syn_edge(&self, foe: &Side, offense: Synergy, defense: Synergy) -> f32 {
+        (self.has_syn(offense) - foe.has_syn(defense)) as f32
     }
 
     fn rate(&self) -> i32 {
@@ -144,12 +169,14 @@ impl<'a> Side<'a> {
     /// Critical against composure: 2% per point of difference.
     fn crit_pct(&self, foe: &Side) -> i32 {
         let diff = (self.f.stats.crit - foe.f.stats.cool) as f32;
-        pct((self.weapon_stats().crit + diff * 0.02).max(0.0))
+        let syn = self.syn_edge(foe, Synergy::KeenBlade, Synergy::CalmEye) * 0.10;
+        pct((self.weapon_stats().crit + diff * 0.02 + syn).max(0.0))
     }
 
     /// Control against tenacity.
     fn control(&self, foe: &Side) -> i32 {
         self.f.stats.ctl - foe.f.stats.ten - if foe.f.has(Skill::Resist) { 2 } else { 0 }
+            + 3 * self.syn_edge(foe, Synergy::FirmHold, Synergy::IronWill) as i32
     }
 
     fn hp_pct_below(&self, p: u8) -> bool {
@@ -183,6 +210,9 @@ impl<'a> Side<'a> {
         }
         if foe.f.has(Skill::LastStand) && foe.hp_pct_below(30) {
             d *= 0.75;
+        }
+        if foe.hp_pct_below(50) {
+            d *= 1.0 + 0.15 * self.syn_edge(foe, Synergy::Quarry, Synergy::SecondWind);
         }
         d
     }
@@ -289,8 +319,11 @@ fn strike(s: &mut [Side; 2], a: usize, ev: &mut Vec<Event>, rule: i32, o: Strike
     let crit_pct = s[a].crit_pct(&s[d]);
     let crit = s[a].crit.add(crit_pct);
     let mut mult = o.mult;
-    if o.kind == "power" && s[d].f.has(Skill::Brace) {
-        mult *= 0.75;
+    if o.kind == "power" {
+        if s[d].f.has(Skill::Brace) {
+            mult *= 0.75;
+        }
+        mult *= 1.0 + 0.15 * s[a].syn_edge(&s[d], Synergy::Crush, Synergy::Unshakable);
     }
     let mut dmg = s[a].damage(ws, mult, &s[d]);
     if crit {
@@ -466,6 +499,23 @@ fn first_on_tie(s: &[Side; 2]) -> usize {
     }
 }
 
+/// Hits landed by side `who`, per weapon in hand (thrown ones included).
+pub fn mastery_gains(r: &FightResult, who: u8) -> Vec<(WeaponKind, u32)> {
+    let mut out: Vec<(WeaponKind, u32)> = Vec::new();
+    for e in r.events.iter().filter(|e| e.who == who && e.hit) {
+        if !matches!(e.kind, "attack" | "power" | "throw" | "counter") {
+            continue;
+        }
+        if let Some(w) = e.weapon.filter(|w| w.wieldable()) {
+            match out.iter_mut().find(|(x, _)| *x == w) {
+                Some((_, n)) => *n += 1,
+                None => out.push((w, 1)),
+            }
+        }
+    }
+    out
+}
+
 /// `a` attacks with its preset `preset`; `b` defends with its defense preset.
 pub fn duel(a: &Fighter, preset: usize, b: &Fighter) -> FightResult {
     fight(&a.loadout(preset), &b.loadout(b.defense))
@@ -504,4 +554,38 @@ pub fn fight(a: &Fighter, b: &Fighter) -> FightResult {
     };
     push(&mut ev, &s, winner as usize, "end", -1);
     FightResult { winner, max_hp, events: ev }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::progress::new_fighter;
+
+    fn duo<'a>(a: &'a Fighter, b: &'a Fighter, sa: &[Synergy], sb: &[Synergy]) -> [Side<'a>; 2] {
+        let mut s = [Side::new(a), Side::new(b)];
+        s[0].syn = sa.to_vec();
+        s[1].syn = sb.to_vec();
+        s[1].hp = s[1].max_hp / 3; // under 50%, for Quarry
+        s
+    }
+
+    /// Each offensive synergy against its answer is exactly the same as neither.
+    #[test]
+    fn synergies_cancel_exactly() {
+        let mut a = new_fighter("A");
+        a.stats = Stats { str: 3, crit: 2, ctl: 4, ..Stats::default() };
+        let mut b = new_fighter("B");
+        b.stats = Stats { tou: 1, cool: 1, ten: 2, ..Stats::default() };
+        let ws = WeaponKind::Club.stats();
+        let measure = |s: &[Side; 2]| (s[0].damage(ws, 1.0, &s[1]), s[0].crit_pct(&s[1]), s[0].control(&s[1]));
+        let none = measure(&duo(&a, &b, &[], &[]));
+        for d in SYNERGIES.iter().filter(|d| d.offense) {
+            let both = measure(&duo(&a, &b, &[d.key], &[d.answers]));
+            assert_eq!(both, none, "{:?}", d.key);
+            let alone = measure(&duo(&a, &b, &[d.key], &[]));
+            if d.key != Synergy::Crush {
+                assert_ne!(alone, none, "{:?} does nothing", d.key);
+            }
+        }
+    }
 }

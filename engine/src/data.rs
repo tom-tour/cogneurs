@@ -1,8 +1,10 @@
 //! Game data: fighters, weapons, skills, stats and battle plans.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum WeaponKind {
     Knife,
@@ -99,6 +101,62 @@ pub enum Skill {
     /// -25% damage taken under 30% HP.
     LastStand,
 }
+
+/// Hits landed with a weapon needed to reach each mastery tier. Tier 1 gives
+/// +3% accuracy with it, tier 2 +10% damage, tier 3 +5% critical chance.
+pub const MASTERY_TIERS: [u32; 3] = [10, 30, 60];
+
+pub fn mastery_tier(hits: u32) -> usize {
+    MASTERY_TIERS.iter().filter(|t| hits >= **t).count()
+}
+
+/// Bonus for carrying two items together. Each offensive synergy has a
+/// defensive one that cancels it exactly.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum Synergy {
+    /// Club + power strike: power strikes deal +15% damage.
+    Crush,
+    /// Shield + brace: power strikes taken deal 15% less.
+    Unshakable,
+    /// Sword + precise strikes: +10% critical chance.
+    KeenBlade,
+    /// Ice blood + riposte: -10% critical chance for the enemy.
+    CalmEye,
+    /// Spear + disarm: +3 control.
+    FirmHold,
+    /// Resist + grip: +3 tenacity against control.
+    IronWill,
+    /// Fury + bloodlust: +15% damage against an enemy under 50% HP.
+    Quarry,
+    /// Potion + last stand: 15% less damage taken under 50% HP.
+    SecondWind,
+}
+
+#[derive(Serialize, Clone, Copy, Debug)]
+pub struct SynergyDef {
+    pub key: Synergy,
+    pub needs: [Pick; 2],
+    /// The synergy this one cancels (or is cancelled by).
+    pub answers: Synergy,
+    pub offense: bool,
+}
+
+const fn syn(key: Synergy, needs: [Pick; 2], answers: Synergy, offense: bool) -> SynergyDef {
+    SynergyDef { key, needs, answers, offense }
+}
+
+/// Synergies in pairs: the offensive one, then the defensive one answering it.
+pub const SYNERGIES: [SynergyDef; 8] = [
+    syn(Synergy::Crush, [w(WeaponKind::Club), sk(Skill::PowerStrike)], Synergy::Unshakable, true),
+    syn(Synergy::Unshakable, [sk(Skill::Shield), sk(Skill::Brace)], Synergy::Crush, false),
+    syn(Synergy::KeenBlade, [w(WeaponKind::Sword), sk(Skill::PreciseStrikes)], Synergy::CalmEye, true),
+    syn(Synergy::CalmEye, [sk(Skill::IceBlood), sk(Skill::Counter)], Synergy::KeenBlade, false),
+    syn(Synergy::FirmHold, [w(WeaponKind::Spear), sk(Skill::Disarm)], Synergy::IronWill, true),
+    syn(Synergy::IronWill, [sk(Skill::Resist), sk(Skill::Grip)], Synergy::FirmHold, false),
+    syn(Synergy::Quarry, [sk(Skill::Fury), sk(Skill::Bloodlust)], Synergy::SecondWind, true),
+    syn(Synergy::SecondWind, [sk(Skill::Potion), sk(Skill::LastStand)], Synergy::Quarry, false),
+];
 
 /// A skill tree branch: three nodes, each with its prerequisite.
 #[derive(Serialize, Clone, Copy, Debug)]
@@ -382,6 +440,8 @@ pub struct Fighter {
     /// Owned skills, derived from the picks (carried ones in a loadout).
     pub skills: Vec<Skill>,
     pub presets: Vec<Preset>,
+    /// Hits landed with each weapon, over all fights. Kept on respec.
+    pub mastery: BTreeMap<WeaponKind, u32>,
     /// Preset used when attacking (the last one chosen).
     pub attack: usize,
     /// Preset used when attacked.
@@ -412,6 +472,8 @@ struct FighterSer {
     #[serde(default)]
     presets: Vec<Preset>,
     #[serde(default)]
+    mastery: BTreeMap<WeaponKind, u32>,
+    #[serde(default)]
     attack: usize,
     #[serde(default)]
     defense: usize,
@@ -438,6 +500,7 @@ impl<'de> Deserialize<'de> for Fighter {
             weapons: Vec::new(),
             skills: Vec::new(),
             presets: s.presets,
+            mastery: s.mastery,
             attack: s.attack,
             defense: s.defense,
             plan: Vec::new(),
@@ -540,6 +603,23 @@ impl Fighter {
         let l = self.loadout(i);
         let name = self.presets.get(i).or(self.presets.first()).map(|p| p.name.clone()).unwrap_or_default();
         Preset { name, weapons: l.weapons, skills: l.skills, plan: l.plan, stance: l.stance }
+    }
+
+    pub fn tier(&self, w: WeaponKind) -> usize {
+        mastery_tier(self.mastery.get(&w).copied().unwrap_or(0))
+    }
+
+    fn holds(&self, p: Pick) -> bool {
+        match p {
+            Pick::Weapon { weapon } => self.weapons.contains(&weapon),
+            Pick::Skill { skill } => self.skills.contains(&skill),
+            _ => false,
+        }
+    }
+
+    /// Synergies active for this fighter (on a loadout: from carried items).
+    pub fn synergies(&self) -> Vec<Synergy> {
+        SYNERGIES.iter().filter(|d| d.needs.iter().all(|p| self.holds(*p))).map(|d| d.key).collect()
     }
 
     /// Rules the plan may use.

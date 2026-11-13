@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Json, State};
+use axum::extract::{Json, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -24,8 +24,8 @@ use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
-use cogneurs_engine::combat::{duel, FightResult};
-use cogneurs_engine::data::{Fighter, Pick, Preset, Stats};
+use cogneurs_engine::combat::{duel, mastery_gains, FightResult};
+use cogneurs_engine::data::{Fighter, Pick, Preset, Stats, WeaponKind};
 use cogneurs_engine::progress;
 use cogneurs_engine::rng::Rng;
 
@@ -37,7 +37,7 @@ mod tunnel;
 #[serde(tag = "k", rename_all = "snake_case")]
 enum Offer {
     Player { name: String },
-    Bot { fighter: Fighter },
+    Bot { fighter: Box<Fighter> },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -57,7 +57,14 @@ struct FightLog {
     defender: String,
     bot: bool,
     winner: u8,
+    /// Names, kits and events, to watch the fight again. Only the latest
+    /// fights keep it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replay: Option<serde_json::Value>,
 }
+
+/// How many recent fights keep their replay.
+const REPLAYS_KEPT: usize = 300;
 
 #[derive(Serialize, Deserialize, Default)]
 struct Db {
@@ -149,6 +156,9 @@ struct OpponentView {
 
 #[derive(Serialize)]
 struct HistoryView {
+    /// Fight id, for `/replay/{id}`.
+    id: usize,
+    replay: bool,
     at: u64,
     attacker: String,
     defender: String,
@@ -179,12 +189,15 @@ fn me_view(app: &App, db: &Db, p: &Player) -> MeView {
     let history = db
         .fights
         .iter()
+        .enumerate()
         .rev()
-        .filter(|f| &f.attacker == me || &f.defender == me)
+        .filter(|(_, f)| &f.attacker == me || &f.defender == me)
         .take(10)
-        .map(|f| {
+        .map(|(id, f)| {
             let attacked = &f.attacker == me;
             HistoryView {
+                id,
+                replay: f.replay.is_some(),
                 at: f.at,
                 attacker: f.attacker.clone(),
                 defender: f.defender.clone(),
@@ -224,7 +237,7 @@ fn make_offers(db: &Db, me: &Fighter, seed: u64) -> Vec<Offer> {
     while offers.len() < 3 {
         let mut bot = progress::gen_opponent(levels[k % 3], rng.next_u64());
         bot.name.push_str(" (bot)");
-        offers.push(Offer::Bot { fighter: bot });
+        offers.push(Offer::Bot { fighter: Box::new(bot) });
         k += 1;
     }
     offers
@@ -343,6 +356,8 @@ struct FightRes {
     /// What each side carried and its plan, revealed after the fight.
     kit: Preset,
     foe_kit: Preset,
+    /// Hits landed per weapon, added to the mastery.
+    gains: Vec<(WeaponKind, u32)>,
     me: MeView,
 }
 
@@ -360,7 +375,7 @@ async fn post_fight(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): 
         return Err(ApiError(StatusCode::TOO_MANY_REQUESTS, "Plus de combats pour aujourd'hui, reviens demain.".into()));
     }
     let (foe, bot) = match p.offers.get(req.index).ok_or_else(|| bad("Adversaire inconnu."))? {
-        Offer::Bot { fighter } => (fighter.clone(), true),
+        Offer::Bot { fighter } => ((**fighter).clone(), true),
         Offer::Player { name } => (
             find_by_name(&db, name).ok_or_else(|| bad("Cet adversaire n'existe plus."))?.fighter.clone(),
             false,
@@ -374,12 +389,33 @@ async fn post_fight(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): 
     let result = duel(&me, preset, &foe);
     let won = result.winner == 0;
     let (kit, foe_kit) = (me.kit(preset), foe.kit(foe.defense));
+    let gains = mastery_gains(&result, 0);
 
     let mut updated = me.clone();
     updated.attack = preset;
+    progress::gain_mastery(&mut updated, &gains);
     progress::record(&mut updated, won);
     let offers = make_offers(&db, &updated, seed);
-    db.fights.push(FightLog { at: now(), attacker: me.name.clone(), defender: foe.name.clone(), bot, winner: result.winner });
+    // A player who defends also trains with the weapons used.
+    if !bot {
+        let foe_gains = mastery_gains(&result, 1);
+        if let Some(q) = db.players.values_mut().find(|q| q.fighter.name == foe.name) {
+            progress::gain_mastery(&mut q.fighter, &foe_gains);
+        }
+    }
+    let replay = json!({ "names": [&me.name, &foe.name], "kits": [&kit, &foe_kit], "result": &result });
+    db.fights.push(FightLog {
+        at: now(),
+        attacker: me.name.clone(),
+        defender: foe.name.clone(),
+        bot,
+        winner: result.winner,
+        replay: Some(replay),
+    });
+    let n = db.fights.len();
+    if n > REPLAYS_KEPT {
+        db.fights[n - REPLAYS_KEPT - 1].replay = None;
+    }
     let p = db.players.get_mut(&t).unwrap();
     p.fighter = updated;
     p.offers = offers;
@@ -387,7 +423,17 @@ async fn post_fight(State(app): State<Arc<App>>, headers: HeaderMap, Json(req): 
     p.fights_today = used + 1;
     app.persist(&db).await;
     let me = me_view(&app, &db, &db.players[&t]);
-    Ok(Json(FightRes { result, foe: progress::public_view(&foe), kit, foe_kit, me }))
+    Ok(Json(FightRes { result, foe: progress::public_view(&foe), kit, foe_kit, gains, me }))
+}
+
+/// A past fight to watch again, for the two fighters who took part.
+async fn get_replay(State(app): State<Arc<App>>, headers: HeaderMap, Path(id): Path<usize>) -> ApiResult<serde_json::Value> {
+    let t = token(&headers)?;
+    let db = app.db.lock().await;
+    let me = &db.players.get(&t).ok_or_else(unknown)?.fighter.name;
+    let log = db.fights.get(id).filter(|f| &f.attacker == me || &f.defender == me);
+    let replay = log.and_then(|f| f.replay.clone()).ok_or_else(|| bad("Ce combat ne peut plus être revu."))?;
+    Ok(Json(replay))
 }
 
 #[derive(Serialize)]
@@ -445,6 +491,7 @@ async fn main() {
         .route("/me/build", put(put_build))
         .route("/me/reroll", post(reroll))
         .route("/fight", post(post_fight))
+        .route("/replay/{id}", get(get_replay))
         .route("/leaderboard", get(leaderboard))
         .with_state(app);
 

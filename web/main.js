@@ -54,6 +54,18 @@ const STAT_PAIRS = [['str', 'tou', '↔'], ['acc', 'eva', '↔'], ['crit', 'cool
 const MAX_SLOT_PICKS = 5;
 const CARRY = 3; // weapons, and skills, a preset may carry
 const MAX_PRESETS = 4;
+// Synergies: two carried items together. Each offensive one has its answer.
+const SYNERGIES = {
+  crush: ['Écrasement', 'Coups puissants : +15 % de dégâts.'],
+  unshakable: ['Inébranlable', 'Coups puissants reçus : -15 % de dégâts. Annule Écrasement.'],
+  keen_blade: ['Lame vive', '+10 % de chances de critique.'],
+  calm_eye: ['Œil calme', "-10 % de chances de critique pour l'adversaire. Annule Lame vive."],
+  firm_hold: ['Prise ferme', '+3 en Contrôle.'],
+  iron_will: ['Volonté de fer', '+3 en Ténacité face au contrôle. Annule Prise ferme.'],
+  quarry: ['Curée', '+15 % de dégâts contre un adversaire sous 50 % de PV.'],
+  second_wind: ['Second souffle', '-15 % de dégâts reçus sous 50 % de PV. Annule Curée.'],
+};
+const TIER_BONUS = ['+3 % de précision', '+10 % de dégâts', '+5 % de critique'];
 const STANCES = {
   aggressive: ['Agressive', "+20 % de dégâts, -5 % d'esquive"],
   balanced: ['Équilibrée', 'Aucun bonus'],
@@ -156,15 +168,17 @@ const Local = {
     const issue = info(me).issue;
     if (issue) throw new Error(`Termine d'abord tes améliorations : ${issue}`);
     const foe = this.s.opponents[index];
-    const { result, kit, foe_kit } = api('fight', { a: me, b: foe, preset });
+    const { result, kit, foe_kit, gains } = api('fight', { a: me, b: foe, preset });
     const won = result.winner === 0;
-    this.s.fighter = api('record', { fighter: { ...me, attack: preset }, won });
-    this.s.history = [{ attacker: me.name, defender: foe.name, won, attacked: true }, ...this.s.history].slice(0, 10);
+    this.s.fighter = api('record', { fighter: { ...me, attack: preset }, won, gains });
+    const replay = { names: [me.name, foe.name], kits: [kit, foe_kit], result };
+    this.s.history = [{ attacker: me.name, defender: foe.name, won, attacked: true, replay }, ...this.s.history].slice(0, 10);
     this.reroll_();
     this.save();
-    return { result, foe: publicView(foe), kit, foe_kit, me: this.view() };
+    return { result, foe: publicView(foe), kit, foe_kit, gains, me: this.view() };
   },
   async leaderboard() { return null; },
+  async replay(entry) { return entry.replay; },
   forget() { store.del(this.key); this.s = null; },
 };
 
@@ -244,6 +258,7 @@ const Remote = {
   reroll() { return this.req('POST', '/me/reroll'); },
   fight(index, preset) { return this.req('POST', '/fight', { index, preset }); },
   leaderboard() { return this.req('GET', '/leaderboard'); },
+  replay(entry) { return this.req('GET', `/replay/${entry.id}`); },
   forget() { store.del('cogneurs.token'); },
 };
 
@@ -356,6 +371,9 @@ function setView(v) {
 
 function renderAll() {
   const f = view.fighter;
+  const inf = info(f);
+  TIERS = inf.mastery_tiers;
+  SYN_DEFS = inf.synergies;
   renderSheet(f);
   renderPlan(f);
   renderOpponents();
@@ -363,9 +381,17 @@ function renderAll() {
   if (info(f).issue && buildDismissed !== `${f.name}/${f.level}`) openBuild();
 }
 
+/** Mastery tier of a weapon (0 to 3). */
+const tierOf = (f, w) => (f.mastery ? TIERS.filter((t) => (f.mastery[w] || 0) >= t).length : 0);
+let TIERS = [10, 30, 60];
+/** Synergies active for these carried items. */
+const synergiesOf = (kit) => SYN_DEFS.filter((d) => d.needs.every((p) => (p.k === 'weapon' ? kit.weapons.includes(p.weapon) : kit.skills.includes(p.skill))));
+let SYN_DEFS = [];
+
 function chipList(f) {
+  const stars = (w) => '★'.repeat(tierOf(f, w));
   return el('div', { class: 'chips' },
-    f.weapons.length ? f.weapons.map((w) => el('span', { class: 'chip w', title: WEAPONS[w][1] }, WEAPONS[w][0])) : el('span', { class: 'muted' }, 'Aucune arme'),
+    f.weapons.length ? f.weapons.map((w) => el('span', { class: 'chip w', title: WEAPONS[w][1] + (tierOf(f, w) ? ` Maîtrise : palier ${tierOf(f, w)}.` : '') }, WEAPONS[w][0], stars(w) ? el('span', { class: 'stars' }, ` ${stars(w)}`) : null)) : el('span', { class: 'muted' }, 'Aucune arme'),
     f.skills.map((s) => el('span', { class: 'chip s', title: SKILLS[s][1] }, SKILLS[s][0])));
 }
 
@@ -388,8 +414,42 @@ function renderSheet(f) {
     el('h3', {}, 'Inventaire'),
     chipList(f),
     el('p', { class: 'hint' }, `Chaque préréglage emporte au plus ${CARRY} armes et ${CARRY} compétences.`),
+    masteryBox(f),
     el('p', { class: 'record' }, `${f.wins} victoire${f.wins > 1 ? 's' : ''} · ${f.losses} défaite${f.losses > 1 ? 's' : ''}`),
     el('p', { class: 'hint' }, 'Victoire : +2 XP. Défaite : +1 XP. Niveaux impairs : +2 points et une place de règle ou une condition. Niveaux pairs : une case de l’arbre de compétences.')));
+}
+
+/** Mastery of each owned weapon: hits landed, next tier. */
+function masteryBox(f) {
+  const ws = f.weapons.filter((w) => w !== 'net');
+  if (!ws.length) return null;
+  return el('div', {},
+    el('h3', {}, 'Maîtrise'),
+    ws.map((w) => {
+      const hits = f.mastery[w] || 0;
+      const tier = tierOf(f, w);
+      const next = TIERS[tier];
+      const prev = tier ? TIERS[tier - 1] : 0;
+      const title = TIER_BONUS.map((b, i) => `Palier ${i + 1} (${TIERS[i]} coups) : ${b}${i < tier ? ' ✓' : ''}`).join('\n');
+      return el('div', { class: 'mastery', title },
+        el('span', {}, WEAPONS[w][0], ' ', el('span', { class: 'stars' }, '★'.repeat(tier) + '☆'.repeat(3 - tier))),
+        el('div', { class: 'bar' }, el('i', { style: `width:${next ? ((hits - prev) / (next - prev)) * 100 : 100}%` })),
+        el('small', { class: 'muted' }, next ? `${hits} / ${next} coups` : `${hits} coups, maîtrise complète`));
+    }),
+    el('p', { class: 'hint' }, 'Chaque coup qui touche avec une arme la fait progresser. Paliers : ' + TIER_BONUS.map((b, i) => `${TIERS[i]} coups, ${b}`).join(' ; ') + '. Gardée en cas de respécialisation.'));
+}
+
+/** The codex: every synergy next to its answer, with the ones the preset has. */
+function renderCodex(kit) {
+  const active = new Set(synergiesOf(kit).map((d) => d.key));
+  const need = (p) => (p.k === 'weapon' ? WEAPONS[p.weapon][0] : SKILLS[p.skill][0]);
+  const card = (d) => el('div', { class: `syn${active.has(d.key) ? ' on' : ''}${d.offense ? '' : ' def'}` },
+    el('b', {}, active.has(d.key) ? '✓ ' : '', SYNERGIES[d.key][0]),
+    el('small', {}, need(d.needs[0]), ' + ', need(d.needs[1])),
+    el('span', {}, SYNERGIES[d.key][1]));
+  const rows = [];
+  for (const d of SYN_DEFS.filter((x) => x.offense)) rows.push(el('div', { class: 'syn-pair' }, card(d), el('span', { class: 'x' }, '↔'), card(SYN_DEFS.find((x) => x.key === d.answers))));
+  $('#codex').replaceChildren(...rows);
 }
 
 let planTimer = null;
@@ -472,6 +532,13 @@ function renderPlan(f) {
     el('div', { class: 'carry-row' }, el('span', { class: 'muted' }, `Compétences ${p.skills.length}/${CARRY}`),
       f.skills.length ? toggles(f.skills, p.skills, SKILLS, 's') : el('span', { class: 'muted' }, 'aucune pour l’instant')));
 
+  const syns = synergiesOf(p);
+  const synEls = syns.map((d) => el('b', { title: SYNERGIES[d.key][1] }, SYNERGIES[d.key][0])).flatMap((x, i) => (i ? [', ', x] : [x]));
+  $('#carry').append(syns.length
+    ? el('p', { class: 'hint' }, 'Synergies actives : ', ...synEls)
+    : el('p', { class: 'hint' }, 'Aucune synergie : emporte deux objets qui vont ensemble (voir le codex).'));
+  renderCodex(p);
+
   const stanceSel = $('#stance');
   stanceSel.replaceChildren(...Object.entries(STANCES).map(([k, [n, d]]) => el('option', { value: k, selected: p.stance === k }, `${n} (${d})`)));
   stanceSel.onchange = () => { p.stance = stanceSel.value; presetsChanged(); };
@@ -549,7 +616,11 @@ async function renderHistory() {
   const h = view.history || [];
   $('#history-card').hidden = !h.length;
   $('#history').replaceChildren(...h.map((x) => el('li', { class: x.won ? 'won' : 'lost' },
-    x.attacked ? `${x.won ? 'Victoire' : 'Défaite'} contre ${x.defender}` : `${x.attacker} t'a attaqué : ${x.won ? 'défendu' : 'perdu'}`)));
+    el('span', {}, x.attacked ? `${x.won ? 'Victoire' : 'Défaite'} contre ${x.defender}` : `${x.attacker} t'a attaqué : ${x.won ? 'défendu' : 'perdu'}`),
+    x.replay ? el('button', { class: 'ghost small', onclick: async () => {
+      const rp = await guarded(() => backend.replay(x));
+      if (rp) playFight(rp, { me: x.attacked ? 0 : 1 });
+    } }, 'Revoir') : null)));
   const board = await guarded(() => backend.leaderboard());
   $('#board-card').hidden = !board;
   if (board) {
@@ -643,7 +714,7 @@ async function startFight(i) {
   const r = await guarded(() => backend.fight(i, f.attack));
   if (!r) return;
   view = r.me;
-  playFight(f, r.kit, r.foe, r.foe_kit, r.result);
+  playFight({ names: [f.name, r.foe.name], kits: [r.kit, r.foe_kit], result: r.result }, { live: true, gains: r.gains, me: 0 });
 }
 
 function logLine(ev, names) {
@@ -672,14 +743,18 @@ function logLine(ev, names) {
 const TURN_KINDS = new Set(['attack', 'power', 'throw', 'equip', 'net', 'disarm', 'guard', 'potion', 'stance', 'skip']);
 const STRIKES = new Set(['attack', 'power', 'throw', 'counter']);
 
-function playFight(meF, kit, foeF, foeKit, res) {
-  const names = [meF.name, foeF.name];
-  const plans = [kit.plan, foeKit.plan];
-  const kits = [kit, foeKit];
+/**
+ * Plays a fight: live right after it, or again from the history.
+ * `rp` = { names, kits, result }, side 0 being the attacker; `opts.me` is
+ * the player's side, `opts.live` and `opts.gains` are for a fresh fight.
+ */
+function playFight(rp, opts = {}) {
+  const { names, kits, result: res } = rp;
+  const plans = kits.map((k) => k.plan);
   const canvas = $('#stage');
   const ctx = canvas.getContext('2d');
-  const sides = [meF, foeF].map((f, i) => ({
-    name: f.name, max: res.max_hp[i], hp: res.max_hp[i], shown: res.max_hp[i], dodge: 0, crit: 0,
+  const sides = [0, 1].map((i) => ({
+    name: names[i], max: res.max_hp[i], hp: res.max_hp[i], shown: res.max_hp[i], dodge: 0, crit: 0,
     wield: null, guard: false, stunned: false, stance: kits[i].stance,
     home: i === 0 ? 220 : 500, dir: i === 0 ? 1 : -1, color: i === 0 ? '#e8893a' : '#6ea8e0', flash: 0,
   }));
@@ -738,17 +813,31 @@ function playFight(meF, kit, foeF, foeKit, res) {
     sides.forEach((s, k) => { s.hp = ev.hp[k]; s.dodge = ev.g[k][0]; s.crit = ev.g[k][1]; });
   }
 
+  /** A side's preset, with how many times each rule fired. */
+  function kitBox(i, title) {
+    const k = kits[i];
+    const fired = (j) => res.events.filter((e) => e.who === i && e.rule === j && (j >= 0 || TURN_KINDS.has(e.kind))).length;
+    const syns = synergiesOf(k);
+    return el('div', { class: 'kit' },
+      el('h3', {}, title),
+      chipList(k),
+      el('div', { class: 'muted', style: 'font-size:12px' }, `Posture ${STANCES[k.stance][0].toLowerCase()}`,
+        syns.length ? ` · synergies : ${syns.map((d) => SYNERGIES[d.key][0]).join(', ')}` : ''),
+      el('ol', {}, k.plan.map((rule, j) => el('li', { class: fired(j) ? '' : 'muted' }, ruleText(rule), el('span', { class: 'fired' }, ` ×${fired(j)}`))),
+        el('li', { class: 'muted' }, 'Sinon → Attaquer', el('span', { class: 'fired' }, ` ×${fired(-1)}`))));
+  }
+
   function finish() {
-    const won = res.winner === 0;
+    const me = opts.me ?? 0;
+    const won = res.winner === me;
     const r = $('#result');
     r.className = won ? 'win' : 'lose';
-    r.replaceChildren(
-      el('div', { class: 'big' }, won ? 'Victoire !' : 'Défaite…'),
-      el('div', { class: 'muted' }, won ? '+2 XP' : '+1 XP'),
-      el('h3', { style: 'margin-top:8px' }, `${foeF.name} révèle son préréglage « ${foeKit.name} »`),
-      chipList(foeKit),
-      el('div', { class: 'muted', style: 'font-size:12px' }, `Posture ${STANCES[foeKit.stance][0].toLowerCase()}`),
-      el('ol', {}, foeKit.plan.map((rule) => el('li', {}, ruleText(rule))), el('li', { class: 'muted' }, 'Sinon → Attaquer')));
+    const gains = (opts.gains || []).map(([w, n]) => `${WEAPONS[w][0]} +${n}`).join(', ');
+    r.replaceChildren(...[
+      el('div', { class: 'big' }, opts.live ? (won ? 'Victoire !' : 'Défaite…') : `${names[res.winner]} remporte le combat`),
+      opts.live ? el('div', { class: 'muted' }, won ? '+2 XP' : '+1 XP', gains ? ` · maîtrise : ${gains}` : '') : null,
+      kitBox(1 - me, opts.live ? `${names[1 - me]} révèle son préréglage « ${kits[1 - me].name} »` : `${names[1 - me]} : « ${kits[1 - me].name} »`),
+      kitBox(me, `Toi : « ${kits[me].name} »`)].filter(Boolean));
     r.hidden = false;
     $('#fight-close').hidden = false;
   }

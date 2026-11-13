@@ -18,7 +18,13 @@ enum Call {
     NewFighter { name: String },
     Info { fighter: Fighter },
     SetBuild { fighter: Fighter, stats: Stats, picks: Vec<Pick> },
-    Record { fighter: Fighter, won: bool },
+    Record {
+        fighter: Fighter,
+        won: bool,
+        /// Hits per weapon, from the fight's `gains`.
+        #[serde(default)]
+        gains: Vec<(WeaponKind, u32)>,
+    },
     Opponents { fighter: Fighter, seed: u64 },
     SetPresets { fighter: Fighter, presets: Vec<Preset>, attack: usize, defense: usize },
     /// `a` attacks with its preset `preset`, `b` defends with its defense preset.
@@ -39,7 +45,8 @@ pub fn handle(request: &str) -> String {
             Ok(()) => json!(fighter),
             Err(e) => return json!({ "err": e }).to_string(),
         },
-        Call::Record { mut fighter, won } => {
+        Call::Record { mut fighter, won, gains } => {
+            progress::gain_mastery(&mut fighter, &gains);
             progress::record(&mut fighter, won);
             json!(fighter)
         }
@@ -50,11 +57,15 @@ pub fn handle(request: &str) -> String {
                 Err(e) => return json!({ "err": e }).to_string(),
             }
         }
-        Call::Fight { a, b, preset } => json!({
-            "result": combat::duel(&a, preset, &b),
-            "kit": a.kit(preset),
-            "foe_kit": b.kit(b.defense),
-        }),
+        Call::Fight { a, b, preset } => {
+            let result = combat::duel(&a, preset, &b);
+            json!({
+                "gains": combat::mastery_gains(&result, 0),
+                "result": result,
+                "kit": a.kit(preset),
+                "foe_kit": b.kit(b.defense),
+            })
+        }
         Call::Load { fighter } => json!(fighter),
     };
     json!({ "ok": ok }).to_string()
@@ -341,6 +352,51 @@ mod tests {
         assert!(r.events.iter().any(|e| e.who == 1 && e.kind == "guard"));
         let shown = public_view(&b);
         assert!(shown.presets.is_empty() && shown.weapons.len() == 4);
+    }
+
+    #[test]
+    fn mastery_grows_and_helps() {
+        let mut a = armed("A");
+        a.plan = default_plan();
+        let b = armed("B");
+        let r = fight(&a, &b);
+        let gains = combat::mastery_gains(&r, 0);
+        let hits = r.events.iter().filter(|e| e.who == 0 && e.hit && e.kind == "attack" && e.weapon.is_some()).count() as u32;
+        assert_eq!(gains, vec![(WeaponKind::Sword, hits)]);
+        gain_mastery(&mut a, &gains);
+        assert_eq!(a.mastery[&WeaponKind::Sword], hits);
+        // Kept on respec.
+        let (stats, picks) = (a.stats, a.picks.clone());
+        set_build(&mut a, stats, picks).unwrap();
+        assert_eq!(a.mastery[&WeaponKind::Sword], hits);
+        // Tier 2 deals more damage than tier 0 with the same plan.
+        let dealt = |f: &Fighter| fight(f, &b).events.iter().filter(|e| e.who == 0 && e.kind == "attack" && e.hit).map(|e| e.value).sum::<i32>();
+        let mut novice = a.clone();
+        novice.mastery.clear();
+        let mut master = a.clone();
+        master.mastery.insert(WeaponKind::Sword, MASTERY_TIERS[1]);
+        assert!(dealt(&master) > dealt(&novice));
+    }
+
+    #[test]
+    fn synergies_need_carried_items() {
+        let sk = |skill| Pick::Skill { skill };
+        let w = |weapon| Pick::Weapon { weapon };
+        let mut a = new_fighter("A");
+        a.level = 4;
+        let stats = Stats { str: 4, tou: 4, spd: 2, end: 2, ..Stats::default() };
+        set_build(&mut a, stats, vec![w(WeaponKind::Club), Pick::Slot, sk(Skill::PowerStrike)]).unwrap();
+        assert_eq!(a.loadout(0).synergies(), vec![Synergy::Crush]);
+        let mut p = a.presets[0].clone();
+        p.weapons.clear();
+        set_presets(&mut a, vec![p], 0, 0).unwrap();
+        assert!(a.loadout(0).synergies().is_empty());
+        // Every synergy has an answer that answers it back.
+        for d in SYNERGIES {
+            let other = SYNERGIES.iter().find(|x| x.key == d.answers).unwrap();
+            assert_eq!(other.answers, d.key);
+            assert_ne!(other.offense, d.offense);
+        }
     }
 
     #[test]

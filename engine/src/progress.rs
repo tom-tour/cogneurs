@@ -24,6 +24,7 @@ pub fn new_fighter(name: &str) -> Fighter {
         weapons: Vec::new(),
         skills: Vec::new(),
         presets: vec![Preset { name: "Principal".into(), plan: default_plan(), ..Preset::default() }],
+        mastery: Default::default(),
         attack: 0,
         defense: 0,
         plan: Vec::new(),
@@ -48,6 +49,8 @@ pub struct BuildInfo {
     /// Choices offered on even levels (weapon or skill).
     pub even: Vec<Pick>,
     pub tree: &'static [Branch],
+    pub synergies: &'static [SynergyDef],
+    pub mastery_tiers: [u32; 3],
 }
 
 pub fn odd_choices() -> Vec<Pick> {
@@ -70,6 +73,8 @@ pub fn build_info(f: &Fighter) -> BuildInfo {
         odd: odd_choices(),
         even: even_choices(),
         tree: &TREE,
+        synergies: &SYNERGIES,
+        mastery_tiers: MASTERY_TIERS,
     }
 }
 
@@ -126,6 +131,13 @@ pub fn set_presets(f: &mut Fighter, mut presets: Vec<Preset>, attack: usize, def
     f.attack = attack;
     f.defense = defense;
     Ok(())
+}
+
+/// Adds the hits landed in a fight to the weapon mastery.
+pub fn gain_mastery(f: &mut Fighter, gains: &[(WeaponKind, u32)]) {
+    for (w, n) in gains {
+        *f.mastery.entry(*w).or_insert(0) += n;
+    }
 }
 
 pub fn record(f: &mut Fighter, won: bool) {
@@ -231,6 +243,11 @@ pub fn gen_opponent(level: u32, seed: u64) -> Fighter {
     }
     while skills.len() > CARRY_SKILLS {
         skills.remove(rng.below(skills.len()));
+    }
+    // Bots have fought before: some mastery of what they own.
+    for w in f.weapons.clone().into_iter().filter(|w| w.wieldable()) {
+        let hits = rng.below(f.level as usize * 6 + 1) as u32;
+        f.mastery.insert(w, hits);
     }
     let stance = *rng.pick(&[Stance::Aggressive, Stance::Balanced, Stance::Balanced, Stance::Defensive]);
     f.presets = vec![Preset { name: "Combat".into(), weapons, skills, plan: Vec::new(), stance }];

@@ -12,7 +12,9 @@ Engine and server are written in Rust; the engine also runs in the page as WebAs
 - Stats come in opposed pairs (Strength / Toughness, Accuracy / Evasion, Critical / Composure, Control / Tenacity), plus Speed and Endurance: one attack point cancels exactly one defense point.
 - **No randomness in progression either.** You spend your own points. Odd levels give +2 points and a choice: one more plan rule (3 at level 1, 8 at most) or a new condition. Even levels give a node of the skill tree: eight branches in opposed pairs (Power / Rampart, Finesse / Composure, Control / Tenacity, Rage / Survival), each node unlocked by the one before it. Everything can be redone for free between fights.
 - **Presets.** A preset is what the fighter carries (3 weapons and 3 skills at most, out of everything it owns) plus a battle plan and a starting stance. You pick the attack preset before each fight; the defense preset is used when someone attacks you. "Take my best weapon" only looks at carried weapons.
-- You see the opponent's stats and everything it owns, not what it carries nor its plan: both are revealed after the fight.
+- **Weapon mastery.** Every hit landed with a weapon trains it. At 10, 30 and 60 hits it gives +3% accuracy, then +10% damage, then +5% critical chance with that weapon. Mastery is kept on respec.
+- **Synergies.** Two items carried together give a bonus (club + power strike, sword + precise strikes...). Each offensive synergy has a defensive answer that cancels it exactly; the in-game codex lists them all.
+- You see the opponent's stats, everything it owns and its masteries, not what it carries nor its plan: both are revealed after the fight, with how many times each rule fired. Recent fights can be watched again from the history.
 - Online, opponents are other players' fighters (bots fill in). The server runs every fight, so results cannot be forged.
 
 ## Layout
@@ -64,7 +66,9 @@ Moteur et serveur en Rust ; le moteur tourne aussi dans la page en WebAssembly.
 - Les caractéristiques vont par paires opposées (Force / Robustesse, Précision / Esquive, Critique / Sang-froid, Contrôle / Ténacité), plus Vitesse et Endurance : un point d'attaque annule exactement un point de défense.
 - **Aucun hasard dans la progression non plus.** Tu répartis tes points toi-même. Niveaux impairs : +2 points et un choix entre une règle de plus dans le plan (3 au niveau 1, 8 au maximum) ou une nouvelle condition. Niveaux pairs : une case de l'arbre de compétences, huit branches en paires opposées (Puissance / Rempart, Finesse / Sang-froid, Contrôle / Ténacité, Rage / Survie), chaque case débloquée par celle d'avant. Tout se refait gratuitement entre deux combats.
 - **Préréglages.** Un préréglage, c'est ce que le cogneur emporte (3 armes et 3 compétences au plus, parmi tout ce qu'il possède), plus un plan de bataille et une posture de départ. Tu choisis le préréglage d'attaque avant chaque combat ; celui de défense sert quand on t'attaque. « Prendre ma meilleure arme » ne regarde que les armes emportées.
-- Tu vois les caractéristiques de l'adversaire et tout ce qu'il possède, pas ce qu'il emporte ni son plan : les deux sont révélés après le combat.
+- **Maîtrise des armes.** Chaque coup qui touche avec une arme l'entraîne. À 10, 30 et 60 coups, elle donne +3 % de précision, puis +10 % de dégâts, puis +5 % de critique avec cette arme. La maîtrise est gardée en cas de respécialisation.
+- **Synergies.** Deux objets emportés ensemble donnent un bonus (massue + coup puissant, épée + coups précis…). Chaque synergie offensive a sa réponse défensive qui l'annule exactement ; le codex du jeu les liste toutes.
+- Tu vois les caractéristiques de l'adversaire, tout ce qu'il possède et ses maîtrises, pas ce qu'il emporte ni son plan : les deux sont révélés après le combat, avec le nombre de fois où chaque règle a servi. Les derniers combats peuvent être revus depuis l'historique.
 - En ligne, les adversaires sont les cogneurs des autres joueurs (complétés par des bots). Le serveur calcule chaque combat : impossible de tricher sur le résultat.
 
 **Jouer :** https://tom-tour.github.io/cogneurs/ (en ligne quand le serveur maison tourne, solo hors ligne sinon)
