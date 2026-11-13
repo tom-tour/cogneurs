@@ -34,6 +34,13 @@ Then open http://localhost:8137. Tests: `cargo test`.
 
 Server settings (environment variables): `PORT` (8137), `COGNEURS_DATA` (`data/cogneurs.json`), `COGNEURS_WEB` (`web`), `COGNEURS_DAILY_FIGHTS` (20, 0 = unlimited).
 
+## Play with a friend
+
+The server also serves the page, so your friend only needs its address:
+
+- Same network: run the server and give them `http://<your-local-ip>:8137` (allow the program through the firewall).
+- Over the internet: expose the server with a tunnel, e.g. `cloudflared tunnel --url http://localhost:8137`, and share the `https://` address it prints.
+
 ## Hosting
 
 - **GitHub Pages** hosts the page only (`.github/workflows/pages.yml`). Without a server it runs in offline solo mode.
@@ -64,6 +71,13 @@ cargo run --release -p cogneurs-server
 ```
 
 Puis ouvrir http://localhost:8137. Tests : `cargo test`.
+
+## Jouer avec un ami
+
+Le serveur sert aussi la page : ton ami n'a besoin que de son adresse.
+
+- Même réseau : lance le serveur et donne-lui `http://<ton-ip-locale>:8137` (autorise le programme dans le pare-feu).
+- Par internet : expose le serveur avec un tunnel, par exemple `cloudflared tunnel --url http://localhost:8137`, et partage l'adresse `https://` affichée.
 
 ## Hébergement
 

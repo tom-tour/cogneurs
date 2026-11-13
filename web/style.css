@@ -19,14 +19,19 @@ body {
   font: 15px/1.45 system-ui, "Segoe UI", sans-serif;
 }
 header {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 12px 20px; border-bottom: 1px solid var(--line);
 }
 h1 { margin: 0; font-size: 22px; letter-spacing: .5px; color: var(--accent2); }
 h2 { margin: 0 0 8px; font-size: 17px; }
 h3 { margin: 0 0 4px; font-size: 15px; }
 .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); padding: 1px 6px; border-radius: 9px; }
-#reset { margin-left: auto; }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.kofi {
+  font-size: 13px; font-weight: 600; color: #fff; background: #ff5e5b; text-decoration: none;
+  padding: 4px 10px; border-radius: 6px; white-space: nowrap;
+}
+.kofi:hover { filter: brightness(1.1); }
 main { padding: 16px; }
 .screen { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
 #create { justify-content: center; }
